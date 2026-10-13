@@ -66,3 +66,46 @@ wait_for() {
     done
     return 1
 }
+
+# Comprobaciones sobre la sesión principal y el entorno (A9 en F1). Solo
+# lecturas que no conectan con ningún servidor X. Requieren OUT y TMP; WATCH
+# lista los procesos de la sesión que deben conservar su PID.
+WATCH=${CRIMSON_F1_WATCH:-bspwm sxhkd}
+TMP=${TMPDIR:-/tmp}
+snapshot() {
+    local p
+    for p in $WATCH; do pgrep -x "$p" >"$OUT/$p.$1"; done
+    pgrep -x Xvfb | sort >"$OUT/xvfb.$1"
+    find /tmp -maxdepth 1 -name '.X*-lock' | sort >"$OUT/locks.$1"
+    find /tmp/.X11-unix -mindepth 1 | sort >"$OUT/sockets.$1"
+    find "$TMP" -maxdepth 1 -name 'xvfb-run.*' | sort >"$OUT/xvfb-run-tmp.$1"
+}
+
+# session_checks prefijo: compara las instantáneas «antes» y «despues» y
+# busca pánicos en los registros de OUT.
+session_checks() {
+    local p before after verdict panics panic_logs s new
+    for p in $WATCH; do
+        before=$(paste -sd, "$OUT/$p.antes")
+        after=$(paste -sd, "$OUT/$p.despues")
+        if [[ -z $before ]]; then
+            record "$1-$p" "mismo PID" "no estaba en ejecución" OMITIDA "pgrep -x $p"
+        else
+            verdict=FALLA
+            [[ $before == "$after" ]] && verdict=OK
+            record "$1-$p" "mismo PID" "antes $before, después ${after:-ninguno}" "$verdict" "pgrep -x $p"
+        fi
+    done
+    panics=$(awk '$2 == 101' "$CODES" | wc -l)
+    panic_logs=$(grep -l 'panicked at' "$OUT"/*.log | wc -l)
+    verdict=FALLA
+    [[ $panics == 0 && $panic_logs == 0 ]] && verdict=OK
+    record "$1-sin-panico" 0 "$panics códigos 101, $panic_logs registros con «panicked at»" "$verdict" "$(wc -l <"$CODES") ejecuciones del binario"
+    for s in xvfb locks sockets xvfb-run-tmp; do
+        new=$(comm -13 "$OUT/$s.antes" "$OUT/$s.despues" | paste -sd' ')
+        verdict=FALLA
+        [[ -z $new ]] && verdict=OK
+        record "$1-sin-residuos-$s" "ninguno nuevo" "${new:-ninguno}" "$verdict" "antes y después: $(paste -sd' ' "$OUT/$s.despues")"
+    done
+    record "$1-xprop-:0" "sin cambios" "-" OMITIDA "omitida deliberadamente: no se consulta la sesión X11 real"
+}

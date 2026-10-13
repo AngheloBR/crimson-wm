@@ -7,6 +7,10 @@
   porque la consulta a la sesión `:0` se omitió deliberadamente. Detalles y
   limitaciones en «Resultados de las pruebas de aceptación de F1».
 - **Fecha:** 2026-10-11 (resultados de F1 añadidos el 2026-10-12)
+- **Actualización F2 (2026-10-13):** la capa 4 selecciona también
+  `SubstructureNotify`, que necesita el mosaico (ADR 0004); la regresión de
+  F1 sobre el código de F2 se describe en «Regresión de F1 con el código
+  de F2».
 
 ## Contexto
 
@@ -73,7 +77,7 @@ validación y la conexión no interpreten `DISPLAY` de forma distinta:
   pantallas que lista la respuesta de conexión
   (`x11rb-0.14.0/src/rust_connection/mod.rs:245-248`) y, si no existe,
   devuelve `InvalidScreen`; `src/connect.rs` (líneas 53-56) lo convierte en
-  el código 14. `src/main.rs` (líneas 54-57) repite la comprobación, con el
+  el código 14. `src/main.rs` (líneas 57-60) repite la comprobación, con el
   mismo código. Ninguna prueba de aceptación ha usado todavía una pantalla
   inexistente.
 - El parser acepta ceros a la izquierda y el signo `+` (`:05` y `:+5` dan
@@ -101,7 +105,7 @@ cookie registrada no se puede usar, y nunca se recurrirá a `-ac`.
 La propiedad `_CRIMSON_SANDBOX` de la ventana raíz debe coincidir con la
 variable de entorno `CRIMSON_SANDBOX_TOKEN`. Solo los scripts de prueba
 crean esa marca, con un valor aleatorio generado con `mcookie`. La variable
-se comprueba antes de abrir la conexión (`src/main.rs`, línea 50).
+se comprueba antes de abrir la conexión (`src/main.rs`, línea 53).
 
 - La propiedad debe ser de tipo `STRING` y formato 8, y su contenido debe
   coincidir byte a byte con el valor de la variable (por ejemplo,
@@ -134,13 +138,19 @@ La selección de `SubstructureRedirect` en la raíz se hace con una petición
 *checked*. Si otro cliente ya la tiene, el error `BadAccess` se gestiona
 explícitamente y el WM termina con el código 12 (verificado en A6).
 
+Desde F2, la misma petición selecciona también `SubstructureNotify`, para
+recibir `UnmapNotify` y `DestroyNotify` de las ventanas (ADR 0004). Varios
+clientes pueden seleccionar ese bit a la vez: según el protocolo X11, solo
+`SubstructureRedirect`, `ResizeRedirect` y `ButtonPress` producen
+`BadAccess`, así que la capa no cambia (A6 sigue pasando).
+
 ### Registro de conexión
 
 No es una capa de protección, sino información de diagnóstico. El WM
 registra a qué servidor se ha conectado (display, fabricante, release, ID
 de la raíz y tamaño de pantalla; verificado en A7). Los registros no
 vuelcan el entorno: el WM solo lee `DISPLAY` y `CRIMSON_SANDBOX_TOKEN`
-(`src/main.rs`, líneas 49-50) y nunca imprime el valor del token.
+(`src/main.rs`, líneas 52-53) y nunca imprime el valor del token.
 
 ### Alcance y limitaciones
 
@@ -240,10 +250,14 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
 
 - **Errores X durante la ejecución:** los debidos a condiciones de carrera
   (`BadWindow`, `BadDrawable`, etc.) llegan como eventos de error; el WM los
-  registra y no termina (`src/wm.rs`, líneas 53-59). Solo la pérdida de la
-  conexión lo termina, con el código 13 (verificado en A8). **Pendiente:**
-  no se ha ejercitado el registro de un error X sin terminar, porque en las
-  pruebas no se produjo ninguno.
+  registra y no termina (`src/wm.rs`, líneas 100-105). Desde F2, un error
+  X en una consulta con respuesta sobre una ventana (por ejemplo,
+  `GetWindowAttributes` de una ventana ya destruida) se registra y la
+  ventana no se gestiona (ADR 0004). Solo la pérdida de la conexión lo
+  termina, con el código 13 (verificado en A8). **Pendiente:** no se ha
+  ejercitado el registro de un error X sin terminar, porque en las pruebas
+  no se produjo ninguno; la A19 de F2 lo intenta sin conseguirlo (ver
+  ADR 0004).
 - **Señales:** en F1 el WM no instala manejadores de señales (no hay código
   de señales en `src/`), así que SIGTERM y SIGINT conservan su
   comportamiento por defecto, aceptable porque el WM aún no guarda estado.
@@ -396,3 +410,24 @@ Observaciones sobre la ejecución:
   conectar tenían `XAUTHORITY` definida.
 - **Portabilidad del arnés:** sus guardas dependen del `xvfb-run` de
   Debian 13; en otro entorno fallan de forma cerrada.
+
+## Regresión de F1 con el código de F2
+
+Ejecutada el 2026-10-13 con `tests/acceptance/f1/run.sh` sobre el binario
+de depuración de F2 (mismo entorno que en «Resultados de las pruebas de
+aceptación de F1»): **46 comprobaciones OK, 0 FALLA y 1 OMITIDA**
+(`A9-xprop-:0`); código de salida 0. Se mantienen A1–A8 y A9 parcial.
+
+Cambios en el arnés de F1 hechos en F2:
+
+- **`A7-extra-configure` se redefinió.** En F2 la ventana de `xmessage` va
+  en mosaico y ocupa toda la pantalla, y su `ConfigureRequest` se deniega
+  (ICCCM §4.1.5), así que la comprobación espera ahora que la geometría no
+  cambie (0, 0, 1280×720) en lugar de 100, 120, 400×200. Es una
+  comprobación negativa con una espera fija de 0,5 s; la A15 de F2 la
+  confirma observando los `ConfigureNotify` sintéticos.
+- **Código común extraído, sin cambios de comportamiento:** las guardas y la
+  preparación de cada Xvfb pasaron de `xvfb-case.sh` a `xvfb-env.sh`, y las
+  comprobaciones de A9 a la función `session_checks` de `lib.sh`, para
+  reutilizarlas en `tests/acceptance/f2/`. Los identificadores de las
+  comprobaciones no cambian.

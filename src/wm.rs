@@ -1,52 +1,98 @@
-//! Bucle de eventos de F1: mapea y configura las ventanas tal como lo piden,
-//! y termina con el atajo provisional `Mod4+Shift+Escape`.
+//! Bucle de eventos de F2 (ADR 0004): las ventanas normales se colocan en
+//! mosaico master-stack y se reorganizan al abrirse, retirarse o destruirse;
+//! los diálogos y demás ventanas auxiliares quedan flotantes. Termina con el
+//! atajo provisional `Mod4+Shift+Escape`.
 
 use x11rb::connection::Connection;
+use x11rb::errors::ReplyError;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    ConfigureWindowAux, ConnectionExt as _, GrabMode, KeyButMask, Keycode, Keysym, ModMask, Window,
+    AtomEnum, ConfigureNotifyEvent, ConfigureRequestEvent, ConfigureWindowAux, ConnectionExt as _,
+    EventMask, MapState, Screen, StackMode, Window,
 };
 
+use crate::clients::{self, Clients, Kind, WindowInfo, WindowTypes};
 use crate::error::Fatal;
+use crate::keys;
+use crate::layout::{self, Rect};
 
-const XK_ESCAPE: Keysym = 0xff1b;
-const XK_NUM_LOCK: Keysym = 0xff7f;
-
-// Máscaras de modificadores del protocolo X11 (`ModMask`).
-const SHIFT: u16 = 1 << 0;
-const LOCK: u16 = 1 << 1;
-const MOD4: u16 = 1 << 6;
-/// Shift, Lock, Control y Mod1 a Mod5.
-const ALL_MODIFIERS: u16 = 0x00ff;
-
-/// Modificadores que distinguen un atajo. `Lock` (Bloq Mayús) y el
-/// modificador de Bloq Num se ignoran.
-const RELEVANT_MODIFIERS: u16 = ALL_MODIFIERS & !LOCK;
-const EXIT_MODIFIERS: u16 = MOD4 | SHIFT;
-
-struct ExitKey {
-    keycodes: Vec<Keycode>,
-    num_lock: u16,
+x11rb::atom_manager! {
+    Atoms: AtomsCookie {
+        _NET_WM_WINDOW_TYPE,
+        _NET_WM_WINDOW_TYPE_NORMAL,
+        _NET_WM_WINDOW_TYPE_DIALOG,
+        _NET_WM_WINDOW_TYPE_UTILITY,
+        _NET_WM_WINDOW_TYPE_SPLASH,
+        _NET_WM_WINDOW_TYPE_TOOLBAR,
+        _NET_WM_WINDOW_TYPE_MENU,
+        _NET_WM_WINDOW_TYPE_DOCK,
+        _NET_WM_WINDOW_TYPE_DESKTOP,
+        _NET_WM_WINDOW_TYPE_NOTIFICATION,
+        _NET_WM_WINDOW_TYPE_TOOLTIP,
+        _NET_WM_WINDOW_TYPE_POPUP_MENU,
+        _NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
+        _NET_WM_WINDOW_TYPE_COMBO,
+        _NET_WM_WINDOW_TYPE_DND,
+    }
 }
 
-pub fn run(conn: &impl Connection, root: Window) -> Result<(), Fatal> {
-    let exit_key = grab_exit_key(conn, root)?;
+/// Máximo de tipos de `_NET_WM_WINDOW_TYPE` que se leen (unidades de 32 bits).
+const MAX_WINDOW_TYPES: u32 = 16;
+
+/// Se llama solo después de superar las capas 1 a 4 del ADR 0003: registrar
+/// los átomos los crea en el servidor, y un servidor rechazado no debe
+/// quedar modificado.
+pub fn run(conn: &impl Connection, screen: &Screen) -> Result<(), Fatal> {
+    let exit_key = keys::grab_exit_key(conn, screen.root)?;
+    let atoms = Atoms::new(conn)
+        .map_err(Fatal::lost)?
+        .reply()
+        .map_err(|e| Fatal::startup("InternAtom", e))?;
+
+    let mut wm = Wm {
+        conn,
+        root: screen.root,
+        area: Rect {
+            x: 0,
+            y: 0,
+            width: screen.width_in_pixels,
+            height: screen.height_in_pixels,
+        },
+        floating_types: [
+            atoms._NET_WM_WINDOW_TYPE_DIALOG,
+            atoms._NET_WM_WINDOW_TYPE_UTILITY,
+            atoms._NET_WM_WINDOW_TYPE_SPLASH,
+            atoms._NET_WM_WINDOW_TYPE_TOOLBAR,
+            atoms._NET_WM_WINDOW_TYPE_MENU,
+            atoms._NET_WM_WINDOW_TYPE_DOCK,
+            atoms._NET_WM_WINDOW_TYPE_DESKTOP,
+            atoms._NET_WM_WINDOW_TYPE_NOTIFICATION,
+            atoms._NET_WM_WINDOW_TYPE_TOOLTIP,
+            atoms._NET_WM_WINDOW_TYPE_POPUP_MENU,
+            atoms._NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
+            atoms._NET_WM_WINDOW_TYPE_COMBO,
+            atoms._NET_WM_WINDOW_TYPE_DND,
+        ],
+        atoms,
+        clients: Clients::default(),
+    };
+    wm.adopt_existing()?;
 
     loop {
         conn.flush().map_err(Fatal::lost)?;
         match conn.wait_for_event().map_err(Fatal::lost)? {
-            Event::MapRequest(event) => {
-                conn.map_window(event.window).map_err(Fatal::lost)?;
+            Event::MapRequest(event) => wm.on_map_request(event.window)?,
+            Event::ConfigureRequest(event) => wm.on_configure_request(&event)?,
+            // Con SubstructureNotify en la raíz, `event` es la raíz. Se
+            // incluye el UnmapNotify sintético con el que un cliente se
+            // retira (ICCCM §4.1.4).
+            Event::UnmapNotify(event) if event.event == wm.root => wm.forget(event.window)?,
+            Event::DestroyNotify(event) if event.event == wm.root => wm.forget(event.window)?,
+            // Una ventana que pasa a ser hija de otra ya no es de primer nivel.
+            Event::ReparentNotify(event) if event.event == wm.root && event.parent != wm.root => {
+                wm.forget(event.window)?
             }
-            Event::ConfigureRequest(event) => {
-                let aux = ConfigureWindowAux::from_configure_request(&event);
-                conn.configure_window(event.window, &aux)
-                    .map_err(Fatal::lost)?;
-            }
-            Event::KeyPress(event)
-                if exit_key.keycodes.contains(&event.detail)
-                    && is_exit_combination(event.state, exit_key.num_lock) =>
-            {
+            Event::KeyPress(event) if exit_key.matches(&event) => {
                 eprintln!("crimson-wm: atajo de salida recibido");
                 return Ok(());
             }
@@ -62,171 +108,261 @@ pub fn run(conn: &impl Connection, root: Window) -> Result<(), Fatal> {
     }
 }
 
-/// Captura `Mod4+Shift+Escape` en la raíz, también con Bloq Mayús y Bloq Num
-/// activos.
-fn grab_exit_key(conn: &impl Connection, root: Window) -> Result<ExitKey, Fatal> {
-    let setup = conn.setup();
-    let min = setup.min_keycode;
-    let count = setup
-        .max_keycode
-        .checked_sub(min)
-        .and_then(|span| span.checked_add(1))
-        .ok_or_else(|| Fatal::Startup("rango de códigos de tecla inválido".into()))?;
-    let mapping = conn
-        .get_keyboard_mapping(min, count)
-        .map_err(Fatal::lost)?
-        .reply()
-        .map_err(|e| Fatal::startup("GetKeyboardMapping", e))?;
-    let modifiers = conn
-        .get_modifier_mapping()
-        .map_err(Fatal::lost)?
-        .reply()
-        .map_err(|e| Fatal::startup("GetModifierMapping", e))?;
+struct Wm<'c, C: Connection> {
+    conn: &'c C,
+    root: Window,
+    /// Área del mosaico: la pantalla completa, fija desde el arranque.
+    area: Rect,
+    atoms: Atoms,
+    floating_types: [u32; 13],
+    clients: Clients,
+}
 
-    let per_keycode = mapping.keysyms_per_keycode;
-    let keycodes = keycodes_for(XK_ESCAPE, min, per_keycode, &mapping.keysyms);
-    if keycodes.is_empty() {
-        return Err(Fatal::Startup(
-            "ningún código de tecla produce Escape; no se puede capturar el atajo de salida".into(),
-        ));
-    }
-    let num_lock_keycodes = keycodes_for(XK_NUM_LOCK, min, per_keycode, &mapping.keysyms);
-    let num_lock = modifier_mask_for(&num_lock_keycodes, &modifiers.keycodes);
-
-    for &keycode in &keycodes {
-        for extra in lock_variants(num_lock) {
-            conn.grab_key(
-                false,
-                root,
-                ModMask::from(EXIT_MODIFIERS | extra),
-                keycode,
-                GrabMode::ASYNC,
-                GrabMode::ASYNC,
-            )
+impl<C: Connection> Wm<'_, C> {
+    /// Gestiona las ventanas que ya estaban mapeadas al arrancar.
+    fn adopt_existing(&mut self) -> Result<(), Fatal> {
+        let tree = self
+            .conn
+            .query_tree(self.root)
             .map_err(Fatal::lost)?
-            .check()
-            .map_err(|e| Fatal::startup("GrabKey(Mod4+Shift+Escape)", e))?;
+            .reply()
+            .map_err(|e| Fatal::startup("QueryTree", e))?;
+        for window in tree.children {
+            let Some((info, map_state)) = self.window_info(window)? else {
+                continue;
+            };
+            if map_state != MapState::VIEWABLE {
+                continue;
+            }
+            if let Some(kind) = clients::classify(&info, &self.window_types()) {
+                self.manage(window, kind);
+            }
+        }
+        self.arrange()
+    }
+
+    fn on_map_request(&mut self, window: Window) -> Result<(), Fatal> {
+        if self.clients.get(window).is_none() {
+            let Some((info, _)) = self.window_info(window)? else {
+                // La ventana desapareció antes de poder clasificarla.
+                return Ok(());
+            };
+            if let Some(kind) = clients::classify(&info, &self.window_types()) {
+                self.manage(window, kind);
+                if kind == Kind::Tiled {
+                    // Se coloca antes de mapearla para que aparezca ya con
+                    // su tamaño.
+                    self.arrange()?;
+                }
+            }
+        }
+        // Las flotantes quedan encima al mapearse: una ventana recién creada
+        // está en lo alto de la pila de apilamiento.
+        self.conn.map_window(window).map_err(Fatal::lost)?;
+        Ok(())
+    }
+
+    /// ICCCM §4.1.5: en mosaico no se concede ningún cambio, ni de geometría
+    /// ni de apilamiento (las flotantes deben seguir encima), y se responde
+    /// con un ConfigureNotify sintético con la geometría real. A las
+    /// flotantes y a las no gestionadas se les aplica lo pedido; el servidor
+    /// genera entonces el ConfigureNotify real.
+    fn on_configure_request(&mut self, event: &ConfigureRequestEvent) -> Result<(), Fatal> {
+        match self.clients.get(event.window) {
+            Some(client) if client.kind == Kind::Tiled => {
+                if let Some(rect) = client.geometry {
+                    let notify = synthetic_configure_notify(event.window, rect);
+                    self.conn
+                        .send_event(false, event.window, EventMask::STRUCTURE_NOTIFY, notify)
+                        .map_err(Fatal::lost)?;
+                }
+            }
+            _ => {
+                let aux = ConfigureWindowAux::from_configure_request(event);
+                self.conn
+                    .configure_window(event.window, &aux)
+                    .map_err(Fatal::lost)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deja de gestionar una ventana que se ha retirado, destruido o
+    /// cambiado de padre. Los eventos repetidos o de ventanas no gestionadas
+    /// no tienen efecto.
+    fn forget(&mut self, window: Window) -> Result<(), Fatal> {
+        match self.clients.unmanage(window) {
+            Some(kind) => {
+                eprintln!(
+                    "crimson-wm: ventana 0x{window:x} retirada ({})",
+                    kind_name(kind)
+                );
+                if kind == Kind::Tiled {
+                    self.arrange()?;
+                }
+                Ok(())
+            }
+            None => Ok(()),
         }
     }
 
-    Ok(ExitKey { keycodes, num_lock })
-}
-
-/// Códigos de tecla cuya lista de keysyms contiene `keysym`.
-fn keycodes_for(
-    keysym: Keysym,
-    min_keycode: Keycode,
-    per_keycode: u8,
-    keysyms: &[Keysym],
-) -> Vec<Keycode> {
-    if per_keycode == 0 {
-        return Vec::new();
+    fn manage(&mut self, window: Window, kind: Kind) {
+        if self.clients.manage(window, kind) {
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x} gestionada ({})",
+                kind_name(kind)
+            );
+        }
     }
-    keysyms
-        .chunks(usize::from(per_keycode))
-        .zip(min_keycode..=Keycode::MAX)
-        .filter(|(syms, _)| syms.contains(&keysym))
-        .map(|(_, keycode)| keycode)
-        .collect()
-}
 
-/// Máscara de los modificadores (de los ocho de X11) a los que está
-/// asignado alguno de `keycodes`, según la respuesta de GetModifierMapping.
-fn modifier_mask_for(keycodes: &[Keycode], modifier_map: &[Keycode]) -> u16 {
-    let per_modifier = modifier_map.len() / 8;
-    if per_modifier == 0 {
-        return 0;
+    /// Aplica el diseño master-stack. Solo se envía la geometría de las
+    /// ventanas que cambian; después se suben las flotantes por encima.
+    fn arrange(&mut self) -> Result<(), Fatal> {
+        let tiled: Vec<Window> = self.clients.tiled().collect();
+        let rects = layout::master_stack(self.area, tiled.len());
+        for (window, rect) in tiled.into_iter().zip(rects) {
+            if self.clients.set_geometry(window, rect) {
+                let aux = ConfigureWindowAux::new()
+                    .x(i32::from(rect.x))
+                    .y(i32::from(rect.y))
+                    .width(u32::from(rect.width))
+                    .height(u32::from(rect.height))
+                    .border_width(0);
+                self.conn
+                    .configure_window(window, &aux)
+                    .map_err(Fatal::lost)?;
+            }
+        }
+        let raise = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
+        for window in self.clients.floating() {
+            self.conn
+                .configure_window(window, &raise)
+                .map_err(Fatal::lost)?;
+        }
+        Ok(())
     }
-    modifier_map
-        .chunks(per_modifier)
-        .enumerate()
-        .filter(|(_, mapped)| mapped.iter().any(|k| *k != 0 && keycodes.contains(k)))
-        .fold(0, |mask, (index, _)| mask | (1 << index))
-}
 
-/// Combinaciones de Bloq Mayús y Bloq Num con las que se repite la captura.
-fn lock_variants(num_lock: u16) -> Vec<u16> {
-    let mut variants = vec![0, LOCK];
-    if num_lock != 0 && num_lock != LOCK {
-        variants.extend([num_lock, num_lock | LOCK]);
+    /// Lee lo necesario para clasificar una ventana, con las tres peticiones
+    /// enviadas juntas. `None`: la ventana ya no existe.
+    fn window_info(&self, window: Window) -> Result<Option<(WindowInfo, MapState)>, Fatal> {
+        let conn = self.conn;
+        let attributes = conn.get_window_attributes(window).map_err(Fatal::lost)?;
+        let transient = conn
+            .get_property(
+                false,
+                window,
+                AtomEnum::WM_TRANSIENT_FOR,
+                AtomEnum::ANY,
+                0,
+                1,
+            )
+            .map_err(Fatal::lost)?;
+        let types = conn
+            .get_property(
+                false,
+                window,
+                self.atoms._NET_WM_WINDOW_TYPE,
+                AtomEnum::ATOM,
+                0,
+                MAX_WINDOW_TYPES,
+            )
+            .map_err(Fatal::lost)?;
+
+        let attributes = reply_or_gone(attributes.reply(), window, "GetWindowAttributes")?;
+        let transient = reply_or_gone(transient.reply(), window, "GetProperty(WM_TRANSIENT_FOR)")?;
+        let types = reply_or_gone(types.reply(), window, "GetProperty(_NET_WM_WINDOW_TYPE)")?;
+        let (Some(attributes), Some(transient), Some(types)) = (attributes, transient, types)
+        else {
+            return Ok(None);
+        };
+
+        let info = WindowInfo {
+            override_redirect: attributes.override_redirect,
+            // Se acepta cualquier tipo de propiedad con un valor de 32 bits:
+            // ICCCM espera WINDOW, pero la regla permisiva es inocua.
+            transient: transient.format == 32 && transient.value_len >= 1,
+            types: types.value32().map(Iterator::collect).unwrap_or_default(),
+        };
+        Ok(Some((info, attributes.map_state)))
     }
-    variants
+
+    fn window_types(&self) -> WindowTypes<'_> {
+        WindowTypes {
+            normal: self.atoms._NET_WM_WINDOW_TYPE_NORMAL,
+            floating: &self.floating_types,
+        }
+    }
 }
 
-fn is_exit_combination(state: KeyButMask, num_lock: u16) -> bool {
-    u16::from(state) & RELEVANT_MODIFIERS & !num_lock == EXIT_MODIFIERS
+/// Respuesta de una petición sobre una ventana que pudo desaparecer entre
+/// el evento y la consulta: un error X se registra y da `None`; solo la
+/// pérdida de la conexión es fatal (código 13).
+fn reply_or_gone<T>(
+    reply: Result<T, ReplyError>,
+    window: Window,
+    context: &str,
+) -> Result<Option<T>, Fatal> {
+    match reply {
+        Ok(value) => Ok(Some(value)),
+        Err(ReplyError::ConnectionError(e)) => Err(Fatal::lost(e)),
+        Err(ReplyError::X11Error(e)) => {
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x} no gestionada: {context}: {:?}",
+                e.error_kind
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// ConfigureNotify sintético con la geometría asignada, en coordenadas de
+/// la raíz (no hay reparenting) y sin borde.
+fn synthetic_configure_notify(window: Window, rect: Rect) -> ConfigureNotifyEvent {
+    ConfigureNotifyEvent {
+        response_type: x11rb::protocol::xproto::CONFIGURE_NOTIFY_EVENT,
+        sequence: 0,
+        event: window,
+        window,
+        above_sibling: x11rb::NONE,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        border_width: 0,
+        override_redirect: false,
+    }
+}
+
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Tiled => "mosaico",
+        Kind::Floating => "flotante",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const NUM_LOCK_MOD2: u16 = 1 << 4;
-
     #[test]
-    fn busca_los_codigos_de_tecla_de_un_keysym() {
-        // Tres keysyms por código de tecla, empezando en el código 8.
-        let keysyms = [0, 0, 0, XK_ESCAPE, 0, 0, 0x61, 0x41, 0, 0, 0, XK_ESCAPE];
-        assert_eq!(keycodes_for(XK_ESCAPE, 8, 3, &keysyms), vec![9, 11]);
+    fn configure_notify_sintetico() {
+        let rect = Rect {
+            x: 640,
+            y: 360,
+            width: 640,
+            height: 360,
+        };
+        let event = synthetic_configure_notify(0x20_0001, rect);
+        assert_eq!(event.response_type, 22);
+        assert_eq!((event.event, event.window), (0x20_0001, 0x20_0001));
         assert_eq!(
-            keycodes_for(XK_NUM_LOCK, 8, 3, &keysyms),
-            Vec::<Keycode>::new()
+            (event.x, event.y, event.width, event.height),
+            (640, 360, 640, 360)
         );
-        assert_eq!(
-            keycodes_for(XK_ESCAPE, 8, 0, &keysyms),
-            Vec::<Keycode>::new()
-        );
-    }
-
-    #[test]
-    fn calcula_la_mascara_de_bloq_num() {
-        // Dos códigos por modificador: Shift, Lock, Control, Mod1..Mod5.
-        let map = [
-            50, 62, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 92, 0,
-        ];
-        assert_eq!(modifier_mask_for(&[77], &map), NUM_LOCK_MOD2);
-        assert_eq!(modifier_mask_for(&[200], &map), 0);
-        assert_eq!(modifier_mask_for(&[0], &map), 0);
-        assert_eq!(modifier_mask_for(&[77], &[]), 0);
-    }
-
-    #[test]
-    fn variantes_de_bloqueo() {
-        assert_eq!(lock_variants(0), vec![0, LOCK]);
-        assert_eq!(
-            lock_variants(NUM_LOCK_MOD2),
-            vec![0, LOCK, NUM_LOCK_MOD2, NUM_LOCK_MOD2 | LOCK]
-        );
-    }
-
-    #[test]
-    fn reconoce_el_atajo_de_salida() {
-        let m4_shift = KeyButMask::MOD4 | KeyButMask::SHIFT;
-        assert!(is_exit_combination(m4_shift, NUM_LOCK_MOD2));
-        assert!(is_exit_combination(
-            m4_shift | KeyButMask::LOCK,
-            NUM_LOCK_MOD2
-        ));
-        assert!(is_exit_combination(
-            m4_shift | KeyButMask::MOD2,
-            NUM_LOCK_MOD2
-        ));
-        assert!(is_exit_combination(
-            m4_shift | KeyButMask::BUTTON1,
-            NUM_LOCK_MOD2
-        ));
-
-        assert!(!is_exit_combination(KeyButMask::MOD4, NUM_LOCK_MOD2));
-        assert!(!is_exit_combination(KeyButMask::SHIFT, NUM_LOCK_MOD2));
-        assert!(!is_exit_combination(
-            m4_shift | KeyButMask::CONTROL,
-            NUM_LOCK_MOD2
-        ));
-        assert!(!is_exit_combination(
-            m4_shift | KeyButMask::MOD1,
-            NUM_LOCK_MOD2
-        ));
-        // Sin Bloq Num asignado a Mod2, Mod2 cuenta como modificador.
-        assert!(!is_exit_combination(m4_shift | KeyButMask::MOD2, 0));
+        assert_eq!((event.border_width, event.above_sibling), (0, 0));
+        assert!(!event.override_redirect);
+        // Se serializa en los 32 bytes de un evento X11.
+        let bytes: [u8; 32] = event.into();
+        assert_eq!(bytes[0], 22);
     }
 }

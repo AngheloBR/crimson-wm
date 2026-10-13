@@ -1,10 +1,13 @@
-//! Crimson WM, fase F1: prototipo que solo arranca en un servidor X de
-//! prueba que supere las salvaguardas del ADR 0003.
+//! Crimson WM, fase F2: mosaico master-stack (ADR 0004). Solo arranca en un
+//! servidor X de prueba que supere las salvaguardas del ADR 0003.
 
 mod cli;
+mod clients;
 mod connect;
 mod display;
 mod error;
+mod keys;
+mod layout;
 mod safeguards;
 mod wm;
 
@@ -74,5 +77,5 @@ fn run() -> Result<(), Fatal> {
         screen.root
     );
 
-    wm::run(&conn, screen.root)
+    wm::run(&conn, screen)
 }

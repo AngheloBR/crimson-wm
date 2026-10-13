@@ -87,9 +87,12 @@ pub fn check_no_other_wm(conn: &impl Connection, root: Window) -> Result<(), Fat
 }
 
 /// Capa 4: selección *checked* de `SubstructureRedirect`, con `BadAccess`
-/// tratado explícitamente.
+/// tratado explícitamente. En la misma petición se selecciona
+/// `SubstructureNotify`, que el mosaico necesita para saber cuándo se
+/// retira o destruye una ventana; ese bit no puede causar `BadAccess`.
 pub fn take_substructure_redirect(conn: &impl Connection, root: Window) -> Result<(), Fatal> {
-    let attributes = ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_REDIRECT);
+    let attributes = ChangeWindowAttributesAux::new()
+        .event_mask(EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY);
     conn.change_window_attributes(root, &attributes)
         .map_err(Fatal::lost)?
         .check()

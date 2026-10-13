@@ -8,99 +8,8 @@ OUT=$2
 CASE=$3
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
-HOLD=
-on_exit() {
-    local rc=$?
-    [[ -n $HOLD ]] && kill "$HOLD" 2>/dev/null
-    echo "$CASE xvfb-case.sh exit: $rc" >>"$RUNS"
-}
-trap on_exit EXIT
-
-# Guardas: solo se continúa dentro del Xvfb de este xvfb-run, con su cookie
-# temporal, sin TCP y sin -ac. Si algo no encaja, no se conecta nada.
-if ! [[ ${DISPLAY:-} =~ ^:[1-9][0-9]*$ ]]; then
-    echo "GUARDA: DISPLAY inesperado"
-    exit 90
-fi
-if [[ ${XAUTHORITY:-} != */xvfb-run.*/Xauthority || ! -s $XAUTHORITY ]]; then
-    echo "GUARDA: XAUTHORITY no es la cookie temporal de xvfb-run"
-    exit 90
-fi
-XVFB_PID=$(pgrep -P "$PPID" -x Xvfb) || {
-    echo "GUARDA: no hay un Xvfb hijo de xvfb-run"
-    exit 90
-}
-mapfile -d '' XVFB_ARGS <"/proc/$XVFB_PID/cmdline"
-if [[ ${XVFB_ARGS[0]} != Xvfb || ${XVFB_ARGS[1]} != "$DISPLAY" ]]; then
-    echo "GUARDA: el Xvfb hijo no sirve $DISPLAY"
-    exit 90
-fi
-auth_ok=0 nolisten_ok=0 SIZE=
-for ((i = 2; i < ${#XVFB_ARGS[@]}; i++)); do
-    case ${XVFB_ARGS[i]} in
-    -ac | -listen)
-        echo "GUARDA: Xvfb arrancado con ${XVFB_ARGS[i]}"
-        exit 90
-        ;;
-    -auth) [[ ${XVFB_ARGS[i + 1]:-} == "$XAUTHORITY" ]] && auth_ok=1 ;;
-    -nolisten) [[ ${XVFB_ARGS[i + 1]:-} == tcp ]] && nolisten_ok=1 ;;
-    -screen) [[ ${XVFB_ARGS[i + 2]:-} =~ ^([0-9]+x[0-9]+)x[0-9]+$ ]] && SIZE=${BASH_REMATCH[1]} ;;
-    esac
-done
-if ((!auth_ok || !nolisten_ok)) || [[ -z $SIZE ]]; then
-    echo "GUARDA: Xvfb sin -auth con la cookie temporal, sin -nolisten tcp o sin -screen"
-    exit 90
-fi
-echo "$CASE: DISPLAY=$DISPLAY, Xvfb pid $XVFB_PID, pantalla $SIZE, -auth <cookie temporal>, -nolisten tcp"
-
-N=${DISPLAY#:}
-TOKEN=$(mcookie)
-export CRIMSON_SANDBOX_TOKEN=$TOKEN
-
-# Xvfb se reinicia, y borra propiedades y átomos de la raíz, cuando se
-# desconecta su último cliente (ADR 0003). Un cliente pasivo mantiene el
-# servidor vivo durante toda la prueba; se confirma con una propiedad de
-# control, que también sirve para detectar un reinicio inesperado.
-xprop -root -spy >/dev/null 2>&1 &
-HOLD=$!
-holding() {
-    kill -0 "$HOLD" &&
-        xprop -root -f _CRIMSON_CONTROL 8s -set _CRIMSON_CONTROL 1 &&
-        xprop -root _CRIMSON_CONTROL | grep -qx '_CRIMSON_CONTROL(STRING) = "1"'
-}
-if ! wait_for holding; then
-    record "$CASE-precondicion" "servidor sin reinicios" "no confirmado" FALLA "_CRIMSON_CONTROL no persiste"
-    exit 1
-fi
-
-# precondition descripción orden...: registra un fallo y aborta si no se cumple.
-precondition() {
-    local what=$1
-    shift
-    if ! "$@" >/dev/null 2>&1; then
-        record "$CASE-precondicion" "$what" "no se cumple" FALLA "$*"
-        exit 1
-    fi
-}
-marker_is() { xprop -root _CRIMSON_SANDBOX | grep -qxF "_CRIMSON_SANDBOX($1) = \"$2\""; }
-marker_differs() { xprop -root _CRIMSON_SANDBOX | grep -q '^_CRIMSON_SANDBOX(STRING) = ' && ! xprop -root _CRIMSON_SANDBOX | grep -qF -- "$TOKEN"; }
-wm_check_present() { xprop -root _NET_SUPPORTING_WM_CHECK | grep -q '= 1$'; }
-no_marker_atom() { [[ -z $(xlsatoms -name _CRIMSON_SANDBOX) ]]; }
-set_marker() {
-    xprop -root -f _CRIMSON_SANDBOX 8s -set _CRIMSON_SANDBOX "$1"
-    precondition "marca presente" marker_is STRING "$1"
-}
-ready() { grep -q 'salvaguardas superadas' "$WM_LOG" && kill -0 "$WM_PID"; }
-# require_ready: aborta la prueba si el WM no llega a gestionar la raíz.
-require_ready() {
-    if ! wait_for ready; then
-        kill -0 "$WM_PID" 2>/dev/null && kill "$WM_PID"
-        wait "$WM_PID"
-        finish "$WM_ID" "en marcha" "$?" 'salvaguardas superadas' "$WM_LOG"
-        record "$CASE-precondicion" "WM en marcha" "no arrancó" FALLA "ver $WM_ID.log"
-        exit 1
-    fi
-}
+# shellcheck source=xvfb-env.sh
+source "$(dirname "$0")/xvfb-env.sh"
 
 case $CASE in
 A3b)
@@ -186,22 +95,23 @@ A7)
         record A7-mapeo IsViewable "$(xwininfo -name crimson-f1 2>&1 | grep -m1 -E 'Map State|error')" FALLA "MapRequest no atendido o WM terminado"
     fi
 
-    # Extra: ConfigureRequest aplicado tal como se pide.
+    # Extra: desde F2 (ADR 0004) la ventana va en mosaico y ocupa toda la
+    # pantalla; su ConfigureRequest se deniega y la geometría no cambia.
+    # Es una comprobación negativa con espera fija: la A15 de F2 la
+    # confirma con el ConfigureNotify sintético.
     wid=$(xwininfo -name crimson-f1 | awk '/Window id:/ {print $4}')
+    tiled="0 0 ${SIZE%x*} ${SIZE#*x}"
+    window_geometry() { xwininfo -id "$wid" | awk '/Absolute upper-left X|Absolute upper-left Y|Width:|Height:/ {printf "%s ", $NF}'; }
+    tiled_now() { [[ $(window_geometry) == "$tiled " ]]; }
+    precondition "ventana en mosaico ($tiled)" wait_for tiled_now
     xdotool windowmove "$wid" 100 120
     xdotool windowsize "$wid" 400 200
-    configured() {
-        xwininfo -id "$wid" | grep -Eq 'Absolute upper-left X: +100$' &&
-            xwininfo -id "$wid" | grep -Eq 'Absolute upper-left Y: +120$' &&
-            xwininfo -id "$wid" | grep -Eq 'Width: 400$' &&
-            xwininfo -id "$wid" | grep -Eq 'Height: 200$'
-    }
-    wait_for configured
-    geometry=$(xwininfo -id "$wid" | awk '/Absolute upper-left X|Absolute upper-left Y|Width:|Height:/ {printf "%s ", $NF}')
+    sleep 0.5
+    geometry=$(window_geometry)
     geometry=${geometry% }
     verdict=FALLA
-    [[ $geometry == '100 120 400 200' ]] && kill -0 "$WM_PID" && verdict=OK
-    record A7-extra-configure "100 120 400 200" "$geometry" "$verdict" "xwininfo tras xdotool windowmove/windowsize, WM en marcha"
+    [[ $geometry == "$tiled" ]] && kill -0 "$WM_PID" && verdict=OK
+    record A7-extra-configure "$tiled" "$geometry" "$verdict" "xwininfo tras xdotool windowmove/windowsize (denegado en mosaico), WM en marcha"
 
     # Extra: Mod4+Escape sin Shift no debe cerrar el WM.
     xdotool key super+Escape

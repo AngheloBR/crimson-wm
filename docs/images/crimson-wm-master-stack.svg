@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="930" viewBox="0 0 1280 930" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F2: diseño master-stack</title>
+  <desc id="desc">Ilustración conceptual, no una captura. Una pantalla de 1280
+    por 720 píxeles con tres ventanas colocadas por el diseño master-stack de
+    F2. La ventana 1, la primera en llegar, ocupa el área master: la mitad
+    izquierda, 640 por 720 en la posición 0, 0. Las ventanas 2 y 3 ocupan el
+    área stack, la mitad derecha, y se reparten su altura: 640 por 360 en la
+    posición 640, 0 y 640 por 360 en la posición 640, 360. El WM las
+    reorganiza al abrir o cerrar ventanas; no dibuja bordes ni márgenes, y
+    los contornos de la ilustración solo distinguen las ventanas.</desc>
+
+  <!-- Fondo general y pie -->
+  <rect width="1280" height="930" fill="#0D1117"/>
+
+  <!-- Pantalla simulada de 1280 × 720, a escala 1:1. Cada ventana es un
+       rectángulo de contorno con otro interior: los contornos son solo
+       ilustrativos (F2 no dibuja bordes) y se dibujan con rellenos para que
+       cualquier renderizador los muestre. -->
+  <rect x="0" y="0" width="640" height="720" fill="#C8102E"/>
+  <rect x="4" y="4" width="632" height="712" fill="#2A0D16"/>
+  <rect x="640" y="0" width="640" height="360" fill="#6E7681"/>
+  <rect x="643" y="3" width="634" height="354" fill="#1B2028"/>
+  <rect x="640" y="360" width="640" height="360" fill="#6E7681"/>
+  <rect x="643" y="363" width="634" height="354" fill="#1B2028"/>
+
+  <!-- Etiquetas de área -->
+  <text x="28" y="48" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="20" font-weight="bold" fill="#E5534B">ÁREA MASTER · 50 % DEL ANCHO</text>
+  <text x="668" y="48" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="20" font-weight="bold" fill="#8B949E">ÁREA STACK · ALTURA REPARTIDA</text>
+
+  <!-- Ventana 1: master -->
+  <circle cx="320" cy="262" r="38" fill="#C8102E"/>
+  <text x="320" y="276" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="38" font-weight="bold" fill="#FFFFFF">1</text>
+  <text x="320" y="360" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="40" font-weight="bold" fill="#F0F3F6">MASTER</text>
+  <text x="320" y="404" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="26" fill="#C9D1D9">Ventana 1</text>
+  <text x="320" y="444" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="24" fill="#8B949E">640 × 720 · posición (0, 0)</text>
+
+  <!-- Ventana 2: stack, arriba -->
+  <circle cx="960" cy="122" r="30" fill="#6E7681"/>
+  <text x="960" y="134" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="32" font-weight="bold" fill="#FFFFFF">2</text>
+  <text x="960" y="208" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="34" font-weight="bold" fill="#F0F3F6">STACK</text>
+  <text x="960" y="248" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="26" fill="#C9D1D9">Ventana 2</text>
+  <text x="960" y="286" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="24" fill="#8B949E">640 × 360 · posición (640, 0)</text>
+
+  <!-- Ventana 3: stack, abajo -->
+  <circle cx="960" cy="482" r="30" fill="#6E7681"/>
+  <text x="960" y="494" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="32" font-weight="bold" fill="#FFFFFF">3</text>
+  <text x="960" y="568" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="34" font-weight="bold" fill="#F0F3F6">STACK</text>
+  <text x="960" y="608" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="26" fill="#C9D1D9">Ventana 3</text>
+  <text x="960" y="646" text-anchor="middle" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="24" fill="#8B949E">640 × 360 · posición (640, 360)</text>
+
+  <!-- Separación entre la pantalla y el pie -->
+  <rect x="0" y="720" width="1280" height="2" fill="#30363D"/>
+
+  <!-- Leyenda -->
+  <rect x="40" y="752" width="22" height="22" fill="#C8102E"/>
+  <rect x="43" y="755" width="16" height="16" fill="#2A0D16"/>
+  <text x="76" y="771" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="22" fill="#C9D1D9">Área master: la primera ventana, con el 50 % del ancho</text>
+  <rect x="40" y="790" width="22" height="22" fill="#6E7681"/>
+  <rect x="43" y="793" width="16" height="16" fill="#1B2028"/>
+  <text x="76" y="809" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="22" fill="#C9D1D9">Área stack: las demás, en orden de llegada, con la altura repartida</text>
+  <text x="40" y="852" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="22" fill="#C9D1D9">Se reorganizan solas al abrir o cerrar ventanas. Sin bordes ni márgenes: los contornos son ilustrativos.</text>
+  <text x="40" y="900" font-family="DejaVu Sans, Liberation Sans, Arial, sans-serif" font-size="20" font-style="italic" fill="#8B949E">Ilustración conceptual del diseño master-stack de Crimson WM F2 en una pantalla de 1280 × 720. No es una captura.</text>
+</svg>

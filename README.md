@@ -1,38 +1,69 @@
 # Crimson WM
 
 Gestor de ventanas para X11, escrito en Rust y dirigido inicialmente a
-Debian 13 (Trixie). Su objetivo es la gestión de ventanas en mosaico, que
-todavía no está implementada (ver «Estado»).
+Debian 13 (Trixie), orientado a la gestión de ventanas en mosaico. Por ahora
+es un prototipo con un único diseño, master-stack (ver «Estado»).
 
 ## Estado
 
-Fase F1: prototipo del núcleo. **Todavía no es un gestor de ventanas
+Fase F2: mosaico master-stack. **Todavía no es un gestor de ventanas
 utilizable:** solo arranca en un servidor X de prueba que supere las
-salvaguardas del ADR 0003, mapea y configura las ventanas tal como lo
-piden y termina con el atajo provisional `Mod4+Shift+Escape`.
+salvaguardas del ADR 0003, coloca las ventanas normales en mosaico, deja
+flotantes los diálogos y termina con el atajo provisional
+`Mod4+Shift+Escape`. No gestiona el foco ni tiene atajos para las
+ventanas, escritorios virtuales ni configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
-(2026-10-11). Últimos resultados registrados en
-`docs/adr/0003-salvaguardas-desarrollo.md`:
+(2026-10-11). Últimos resultados registrados (detalles y limitaciones en
+`docs/adr/0004-mosaico-master-stack.md` y
+`docs/adr/0003-salvaguardas-desarrollo.md`):
 
-- Pruebas unitarias U1–U4 (18 pruebas de `cargo test`): pasaron.
-- Pruebas de aceptación de F1, ejecutadas el 2026-10-12 en Xvfb sobre el
-  binario de depuración: A1–A8 pasaron y **A9 quedó parcial**, porque la
-  consulta de la raíz de `:0` se omitió deliberadamente. Detalles y
-  limitaciones en «Resultados de las pruebas de aceptación de F1».
+- Pruebas unitarias U1–U7 (36 pruebas de `cargo test`): pasaron.
+- Pruebas de aceptación de F2, ejecutadas el 2026-10-13 en Xvfb sobre el
+  binario de depuración: A10–A20 pasaron y **A21 quedó parcial**, porque
+  la consulta de la raíz de `:0` se omite deliberadamente.
+- Regresión de F1 sobre el código de F2, el mismo día: A1–A8 pasaron y
+  **A9 quedó parcial** por el mismo motivo.
 
 Son los resultados de esas ejecuciones concretas, no una garantía para
 cambios posteriores: las pruebas deben repetirse tras cada cambio.
 
 No ejecutes Crimson WM sobre una sesión gráfica real.
 
-## Funcionamiento de F1
+## Diseño master-stack (F2)
 
-![Diagrama del arranque de Crimson WM F1 en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas y atiende eventos; :0 se rechaza](docs/images/crimson-wm-overview.svg)
+![Ilustración conceptual de una pantalla de 1280 × 720 con tres ventanas: la ventana 1 ocupa el área master, la mitad izquierda (640 × 720), y las ventanas 2 y 3 se reparten el área stack, la mitad derecha (640 × 360 cada una)](docs/images/crimson-wm-master-stack.png)
 
-*Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 y
-0003. No es una captura ni demuestra una ejecución; los resultados de las
-pruebas están en el ADR 0003.*
+*Ilustración conceptual, no una captura. Fuente editable:
+`docs/images/crimson-wm-master-stack.svg`.*
+
+- La primera ventana ocupa el área master, la mitad izquierda. Las demás,
+  en orden de llegada, se reparten la altura de la mitad derecha.
+- Al abrir, cerrar o desmapear una ventana, el mosaico se reorganiza. Si se
+  cierra la maestra, la siguiente ocupa su lugar; una ventana que vuelve a
+  mapearse entra al final.
+- Los diálogos y las ventanas transitorias quedan flotantes, por encima del
+  mosaico, con la geometría que piden.
+- Una ventana en mosaico no puede cambiar su posición ni su tamaño: el WM
+  deniega la petición y le comunica su geometría real (ICCCM).
+- Sin bordes ni márgenes, y con una proporción fija del 50 %.
+
+Detalles, casos límite y limitaciones en el ADR 0004.
+
+![Captura de prueba en Xvfb: xlogo ocupa la mitad izquierda, y xclock y xeyes se reparten la mitad derecha](docs/images/crimson-wm-f2-captura-xvfb.png)
+
+*Captura de prueba tomada con `xwd` en un Xvfb aislado de 1280 × 720, con
+Crimson WM F2 en marcha: `xlogo` como maestra, y `xclock` y `xeyes` en la
+pila. No es una sesión de escritorio. El negro alrededor de los ojos es la
+raíz del servidor: `xeyes` usa una ventana con forma.*
+
+## Arranque y eventos
+
+![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, adopta las ventanas visibles y atiende los eventos en mosaico; :0 se rechaza](docs/images/crimson-wm-overview.svg)
+
+*Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 a
+0004. No es una captura ni demuestra una ejecución; los resultados de las
+pruebas están en los ADR 0003 y 0004.*
 
 ## Principios
 
@@ -57,7 +88,8 @@ pruebas están en el ADR 0003.*
 | `xauth` | `xauth` | Cookies de autenticación de los servidores de prueba | Instalado |
 | `util-linux` | `mcookie`, `unshare` | Valores aleatorios para cookies y marca de sandbox; aislamiento sin privilegios de A1, A2 y A3a | Instalado |
 | `bsdextrautils` | `column` | Tabla de resultados del arnés de aceptación | Instalado |
-| `x11-utils` | `xprop`, `xwininfo`, `xmessage`, `xlsatoms` | Clientes y comprobaciones de prueba | Instalado |
+| `x11-utils` | `xprop`, `xwininfo`, `xmessage`, `xlsatoms`, `xev` | Clientes y comprobaciones de prueba | Instalado |
+| `x11-apps` | `xlogo` | Cliente de prueba de F2 (A19) | Instalado |
 | `xdotool` | `xdotool` | Simulación de teclado en pruebas | Instalado |
 | `procps` | `pgrep` | Comprobación de procesos | Instalado |
 | `shellcheck` | `shellcheck` | Análisis de los scripts de prueba | Instalado |
@@ -69,6 +101,7 @@ pruebas están en el ADR 0003.*
 | Herramienta | Uso | Estado |
 |---|---|---|
 | `cargo-deny`, `cargo-audit` | Licencias y avisos de seguridad de dependencias | Aplazadas hasta que el árbol de dependencias lo justifique |
+| `imagemagick` (`magick`), `x11-apps` (`xwd`, `xclock`, `xeyes`) | Solo documentación: generar el PNG de la ilustración desde su SVG y la captura de prueba en Xvfb. Ningún script del arnés los usa | Instalados |
 | `ss` (`iproute2`) | Posible comprobación adicional de a qué servidor se conecta el WM (`ss -xp`, ver ADR 0003). Ningún script del arnés actual la usa | Instalada; pendiente de validar |
 
 No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
@@ -78,7 +111,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U4)
+### Unitarias (U1–U7)
 
 ```sh
 cargo test --locked
@@ -115,6 +148,22 @@ falla, falta o está duplicada; 2 si no se pudo preparar la ejecución
 fallo de `mktemp` al crear el directorio de resultados). Las comprobaciones
 omitidas no cuentan como fallo: un 0 no significa que A9 esté completa.
 
+### Aceptación de F2 (A10–A21)
+
+```sh
+cargo build --locked
+tests/acceptance/f2/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas y código de salida que el arnés de F1,
+  cuyas guardas y funciones reutiliza (`f1/lib.sh` y `f1/xvfb-env.sh`).
+- Cada prueba se ejecuta en un Xvfb nuevo de 1280×720 (A20, de 1279×719) y
+  comprueba la geometría de las ventanas con `xwininfo`.
+- A21 equivale a A9: solo observa la sesión principal con `pgrep`, así que
+  queda siempre parcial.
+- Los resultados se guardan en un directorio nuevo `crimson-f2.XXXXXX`
+  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+
 ### Servidores de prueba
 
 - **Xvfb**, mediante `xvfb-run -a`. Según `/usr/bin/xvfb-run` en Debian 13,
@@ -141,6 +190,7 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK` o `BadAccess`). Son
 - `docs/adr/0002-x11rb.md`: biblioteca X11 y garantías de `unsafe`.
 - `docs/adr/0003-salvaguardas-desarrollo.md`: protección de la sesión
   principal y códigos de salida.
+- `docs/adr/0004-mosaico-master-stack.md`: motor de mosaico de F2.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior
@@ -161,10 +211,10 @@ existen (o existirán):
   `/tmp/xvfb-run.*`), `/tmp/.X<N>-lock` y `/tmp/.X11-unix/X<N>`. Esos
   archivos se pueden borrar después de comprobar con `pgrep -a Xvfb` (o
   `pgrep -a Xephyr`) que no queda ningún servidor en ese display.
-- Los resultados de las pruebas de aceptación, en `$TMPDIR/crimson-f1.*`
-  (o `/tmp/crimson-f1.*`). El arnés no los borra; se pueden eliminar cuando
-  ya no se necesiten. Los espacios de nombres de `unshare` y el tmpfs que
-  se monta dentro desaparecen al terminar.
+- Los resultados de las pruebas de aceptación, en `$TMPDIR/crimson-f1.*` y
+  `$TMPDIR/crimson-f2.*` (o en `/tmp`). Los arneses no los borran; se pueden
+  eliminar cuando ya no se necesiten. Los espacios de nombres de `unshare`
+  y el tmpfs que se monta dentro desaparecen al terminar.
 
 Nada de esto modifica la sesión bspwm + sxhkd, sus configuraciones, el
 gestor de inicio ni los archivos de sesión.
