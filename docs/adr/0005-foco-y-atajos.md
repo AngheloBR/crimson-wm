@@ -6,6 +6,9 @@
   aceptación de F3»).
 - **Fecha:** 2026-10-13 (atajo de Zoom cambiado a `Mod4+Shift+Return` y
   combinaciones reservadas añadidas el mismo día, en F3-B.1)
+- **Actualización F4 (2026-10-13):** las seis combinaciones de aplicaciones
+  ya no están reservadas: lanzan programas y sus atajos son opcionales
+  (ADR 0006). Las secciones afectadas lo indican.
 
 ## Contexto
 
@@ -36,16 +39,17 @@ dependencias nuevas.
 | `Mod4+Shift+Return` | Zoom: la ventana enfocada pasa a maestra; si ya lo es, se intercambia con la segunda. El foco no cambia |
 | `Mod4+Shift+Escape` | Salida con 0 (ADR 0003) |
 
-`Mod4+Return` no se captura ni tiene acción: está reservado para la
+En F3, `Mod4+Return` no se captura ni tiene acción: está reservado para la
 terminal (ver «Combinaciones reservadas»), y hasta entonces la pulsación
-llega a la ventana enfocada.
+llega a la ventana enfocada. **Desde F4** lanza la terminal (ADR 0006).
 
 - Los modificadores se comparan de forma exacta, sin contar Bloq Mayús ni
   Bloq Num: `Mod4+Shift+j` no hace nada. Todos los atajos se capturan
   también con esos bloqueos activos.
 - Todos son obligatorios: si falta la tecla en el mapa o falla `GrabKey`
   (por ejemplo, con `BadAccess` porque otro cliente la tiene), el WM
-  termina con 14, como con el atajo de salida en F1.
+  termina con 14, como con el atajo de salida en F1. Desde F4, los atajos
+  de lanzamiento son la excepción: opcionales, con un aviso (ADR 0006).
 - En el Xvfb de pruebas (mapa por defecto) Mod4 es `Super_L`/`Super_R`
   (también `Hyper_L`), Mod2 es `Num_Lock`, y `j`, `k`, `Return` y `Escape`
   son los códigos 44, 45, 36 y 9. No hay otras capturas.
@@ -61,7 +65,8 @@ siguientes quedan reservadas: **no están implementadas, no se capturan y
 el WM no ejecuta ningún programa**. Una prueba unitaria comprueba que la
 tabla de atajos no ocupa ninguna.
 
-Aplicaciones, para el lanzador de F4:
+Aplicaciones, para el lanzador de F4. **Implementadas en F4** con estas
+mismas órdenes, como argv sin shell (ADR 0006); ya no están reservadas:
 
 | Atajo | Aplicación | Orden prevista |
 |---|---|---|
@@ -215,7 +220,9 @@ sin conectar con `:0`.
 - A23. Con A, B y C (foco en C): `Mod4+j` lleva a A (vuelta) y a B;
   `Mod4+k`, a A y a C (vuelta).
 - A24. `Mod4+Return` no se captura: la ventana enfocada (C) registra la
-  pulsación en su `xev` y el mosaico no cambia. `Mod4+Shift+Return` sobre C
+  pulsación en su `xev` y el mosaico no cambia. (Desde F4 esta
+  comprobación es `A24-super-return-capturado`: C no recibe la pulsación y
+  el lanzamiento falla porque el `PATH` del WM está vacío; ver ADR 0006.) `Mod4+Shift+Return` sobre C
   la pone de maestra (C, A, B) con el foco en C, sin que la pulsación llegue
   a C; repetido, A vuelve a maestra (A, C, B) y el foco sigue en C.
 - A25. Con el historial B, C, A, al cerrar B el foco pasa a C y el mosaico
@@ -294,6 +301,7 @@ ejercitan todos los casos de F3.
   descartado; ICCCM permite que los clientes se den el foco.
 - **Avisar y seguir si falla la captura de un atajo:** descartado; un WM
   sin parte de sus atajos sería confuso, y el código 14 ya cubre ese caso.
+  F4 lo adopta solo para los atajos de lanzamiento (ADR 0006).
 - **Zoom sin efecto sobre la maestra:** descartado; el intercambio con la
   segunda (como dwm) es más útil.
 - **Zoom con `Mod4+Return`** (como dwm), la primera propuesta: sustituido

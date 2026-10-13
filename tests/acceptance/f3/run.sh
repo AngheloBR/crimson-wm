@@ -77,7 +77,7 @@ session_checks A32
 expected=(
     A22-primera A22-segunda A22-focusin-cliente A22 A22-salida-limpia A22-extra-sin-errores-x
     A23-siguiente-vuelta A23-siguiente A23-anterior A23-anterior-vuelta A23 A23-extra-sin-errores-x
-    A24-super-return-libre A24-maestra A24-foco A24-zoom-capturado
+    A24-super-return-capturado A24-maestra A24-foco A24-zoom-capturado
     A24-intercambio A24-foco-intercambio A24 A24-extra-sin-errores-x
     A25-historial A25-mosaico A25 A25-extra-sin-errores-x
     A26-desmapeo A26-sin-ventanas A26 A26-extra-sin-errores-x

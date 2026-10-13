@@ -1,4 +1,5 @@
-//! Crimson WM, fase F2: mosaico master-stack (ADR 0004). Solo arranca en un
+//! Crimson WM, fase F4: mosaico master-stack (ADR 0004), foco por teclado
+//! (ADR 0005) y lanzamiento de aplicaciones (ADR 0006). Solo arranca en un
 //! servidor X de prueba que supere las salvaguardas del ADR 0003.
 
 mod cli;
@@ -9,6 +10,7 @@ mod error;
 mod keys;
 mod layout;
 mod safeguards;
+mod spawn;
 mod wm;
 
 use std::io::Write as _;
@@ -77,5 +79,5 @@ fn run() -> Result<(), Fatal> {
         screen.root
     );
 
-    wm::run(&conn, screen)
+    wm::run(&conn, screen, &target)
 }

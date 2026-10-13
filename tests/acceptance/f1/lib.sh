@@ -43,11 +43,15 @@ run_bin() {
     finish "$id" "$want" "$?" "$pattern" "$log"
 }
 
-# start_wm id: arranca el WM en segundo plano (WM_ID, WM_PID, WM_LOG).
+# start_wm id: arranca el WM en segundo plano (WM_ID, WM_PID, WM_LOG) con
+# `env -i` y solo las variables de WM_ENV (xvfb-env.sh), después de
+# comprobar que su PATH no puede resolver ninguna aplicación real. WM_PID es
+# el de `timeout`; el WM es su único hijo.
 start_wm() {
     WM_ID=$1
     WM_LOG=$OUT/$1.log
-    timeout 30 "$BIN" >"$WM_LOG" 2>&1 &
+    precondition "PATH del WM aislado" isolated
+    timeout 30 env -i "${WM_ENV[@]}" "$BIN" >"$WM_LOG" 2>&1 &
     WM_PID=$!
 }
 

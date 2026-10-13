@@ -1,18 +1,27 @@
-//! Atajos de teclado (ADR 0005): una tabla fija capturada en la raíz,
-//! también con Bloq Mayús y Bloq Num activos. Incluye el atajo provisional
-//! de salida `Mod4+Shift+Escape` (ADR 0003).
+//! Atajos de teclado (ADR 0005 y 0006): una tabla fija capturada en la
+//! raíz, también con Bloq Mayús y Bloq Num activos. Incluye el atajo
+//! provisional de salida `Mod4+Shift+Escape` (ADR 0003) y los de
+//! lanzamiento de aplicaciones.
 
 use x11rb::connection::Connection;
+use x11rb::errors::ReplyError;
 use x11rb::protocol::xproto::{
-    ConnectionExt as _, GrabMode, KeyButMask, KeyPressEvent, Keycode, Keysym, ModMask, Window,
+    ConnectionExt as _, GrabMode, KeyButMask, KeyPressEvent, KeyReleaseEvent, Keycode, Keysym,
+    ModMask, Timestamp, Window,
 };
 
 use crate::error::Fatal;
+use crate::spawn;
 
 const XK_ESCAPE: Keysym = 0xff1b;
 const XK_RETURN: Keysym = 0xff0d;
+const XK_PRINT: Keysym = 0xff61;
+const XK_B: Keysym = 0x0062;
+const XK_D: Keysym = 0x0064;
+const XK_E: Keysym = 0x0065;
 const XK_J: Keysym = 0x006a;
 const XK_K: Keysym = 0x006b;
+const XK_N: Keysym = 0x006e;
 const XK_NUM_LOCK: Keysym = 0xff7f;
 
 // Máscaras de modificadores del protocolo X11 (`ModMask`).
@@ -36,6 +45,8 @@ pub enum Action {
     FocusPrev,
     /// Convierte la ventana enfocada en la maestra.
     Zoom,
+    /// Lanza el programa de ese índice de `spawn::PROGRAMS`.
+    Launch(usize),
 }
 
 struct Binding {
@@ -46,8 +57,15 @@ struct Binding {
     action: Action,
 }
 
-/// Todos los atajos son obligatorios: si alguno no se puede capturar, el WM
-/// no arranca (código 14).
+impl Binding {
+    /// Los atajos de control del WM son obligatorios: si alguno no se puede
+    /// capturar, el WM no arranca (código 14). Los de lanzamiento son
+    /// opcionales: se avisa y el WM sigue sin ellos.
+    fn required(&self) -> bool {
+        !matches!(self.action, Action::Launch(_))
+    }
+}
+
 const BINDINGS: &[Binding] = &[
     Binding {
         modifiers: MOD4 | SHIFT,
@@ -73,6 +91,42 @@ const BINDINGS: &[Binding] = &[
         name: "Mod4+Shift+Return",
         action: Action::Zoom,
     },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_RETURN,
+        name: "Mod4+Return",
+        action: Action::Launch(spawn::TERMINAL),
+    },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_D,
+        name: "Mod4+d",
+        action: Action::Launch(spawn::LAUNCHER),
+    },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_E,
+        name: "Mod4+e",
+        action: Action::Launch(spawn::FILES),
+    },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_B,
+        name: "Mod4+b",
+        action: Action::Launch(spawn::BROWSER),
+    },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_N,
+        name: "Mod4+n",
+        action: Action::Launch(spawn::EDITOR),
+    },
+    Binding {
+        modifiers: 0,
+        keysym: XK_PRINT,
+        name: "Print",
+        action: Action::Launch(spawn::SCREENSHOT),
+    },
 ];
 
 /// Combinaciones reservadas para fases posteriores (ADR 0005). No se
@@ -80,12 +134,6 @@ const BINDINGS: &[Binding] = &[
 /// pruebas, para comprobar que la tabla no las ocupa.
 #[cfg(test)]
 const RESERVED: &[(u16, Keysym)] = &[
-    (MOD4, XK_RETURN),      // Terminal (F4).
-    (MOD4, 0x0064),         // d: lanzador (F4).
-    (MOD4, 0x0065),         // e: archivos (F4).
-    (MOD4, 0x0062),         // b: navegador (F4).
-    (MOD4, 0x006e),         // n: editor (F4).
-    (0, 0xff61),            // Print: capturas (F4).
     (MOD4, 0x0068),         // h: foco a la izquierda.
     (MOD4, 0x006c),         // l: foco a la derecha.
     (MOD4, 0x0077),         // w: cerrar la ventana.
@@ -142,30 +190,115 @@ pub fn grab_bindings(conn: &impl Connection, root: Window) -> Result<Bindings, F
     for binding in BINDINGS {
         let keycodes = keycodes_for(binding.keysym, min, per_keycode, &mapping.keysyms);
         if keycodes.is_empty() {
-            return Err(Fatal::Startup(format!(
-                "ningún código de tecla produce la tecla de {}; no se puede capturar el atajo",
+            if binding.required() {
+                return Err(Fatal::Startup(format!(
+                    "ningún código de tecla produce la tecla de {}; no se puede capturar el atajo",
+                    binding.name
+                )));
+            }
+            eprintln!(
+                "crimson-wm: aviso: ningún código de tecla produce la tecla de {}; atajo desactivado",
                 binding.name
-            )));
+            );
+            continue;
         }
         for &keycode in &keycodes {
-            for extra in lock_variants(num_lock) {
-                conn.grab_key(
-                    false,
-                    root,
-                    ModMask::from(binding.modifiers | extra),
-                    keycode,
-                    GrabMode::ASYNC,
-                    GrabMode::ASYNC,
-                )
-                .map_err(Fatal::lost)?
-                .check()
-                .map_err(|e| Fatal::startup(&format!("GrabKey({})", binding.name), e))?;
+            if grab_key(conn, root, binding, keycode, num_lock)? {
+                keys.push((keycode, binding.modifiers, binding.action));
             }
-            keys.push((keycode, binding.modifiers, binding.action));
         }
     }
 
     Ok(Bindings { keys, num_lock })
+}
+
+/// Captura `keycode` con los modificadores del atajo y cada variante de
+/// bloqueo. Si el servidor rechaza alguna (p. ej., otro cliente ya la
+/// tiene), un atajo obligatorio impide arrancar; en uno opcional se avisa,
+/// se deshacen las variantes ya capturadas, para que la tecla no quede
+/// capturada sin acción, y se devuelve `false`.
+fn grab_key(
+    conn: &impl Connection,
+    root: Window,
+    binding: &Binding,
+    keycode: Keycode,
+    num_lock: u16,
+) -> Result<bool, Fatal> {
+    let mut grabbed = Vec::new();
+    for extra in lock_variants(num_lock) {
+        let modifiers = ModMask::from(binding.modifiers | extra);
+        let result = conn
+            .grab_key(
+                false,
+                root,
+                modifiers,
+                keycode,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            )
+            .map_err(Fatal::lost)?
+            .check();
+        match result {
+            Ok(()) => grabbed.push(modifiers),
+            Err(ReplyError::X11Error(e)) if !binding.required() => {
+                eprintln!(
+                    "crimson-wm: aviso: GrabKey({}) rechazado en el código de tecla {keycode}: {:?}; atajo desactivado en esa tecla",
+                    binding.name, e.error_kind
+                );
+                for modifiers in grabbed {
+                    conn.ungrab_key(keycode, root, modifiers)
+                        .map_err(Fatal::lost)?;
+                }
+                return Ok(false);
+            }
+            Err(e) => return Err(Fatal::startup(&format!("GrabKey({})", binding.name), e)),
+        }
+    }
+    Ok(true)
+}
+
+/// Intervalo mínimo entre dos lanzamientos del mismo atajo, en ms.
+const REPEAT_INTERVAL: Timestamp = 300;
+
+/// Filtro de repetición de los atajos de lanzamiento. Ignora:
+/// - la repetición automática del servidor: sin la extensión XKB, cada
+///   repetición llega como un KeyRelease y un KeyPress de la misma tecla con
+///   la misma marca de tiempo;
+/// - las pulsaciones de un atajo a menos de `REPEAT_INTERVAL` de la
+///   anterior, aceptada o no, según las marcas de tiempo del servidor (que
+///   dan la vuelta cada 2^32 ms).
+#[derive(Default)]
+pub struct Repeats {
+    /// Última liberación de una tecla capturada: código y marca de tiempo.
+    release: Option<(Keycode, Timestamp)>,
+    /// Última pulsación de cada atajo de lanzamiento, por índice de
+    /// programa.
+    presses: Vec<(usize, Timestamp)>,
+}
+
+impl Repeats {
+    pub fn released(&mut self, event: &KeyReleaseEvent) {
+        self.release = Some((event.detail, event.time));
+    }
+
+    /// Indica si la pulsación del atajo del programa `program` debe
+    /// lanzarlo.
+    pub fn accept(&mut self, program: usize, event: &KeyPressEvent) -> bool {
+        self.accept_at(program, event.detail, event.time)
+    }
+
+    fn accept_at(&mut self, program: usize, keycode: Keycode, time: Timestamp) -> bool {
+        let autorepeat = self.release == Some((keycode, time));
+        let previous = match self.presses.iter_mut().find(|(p, _)| *p == program) {
+            Some((_, last)) => Some(std::mem::replace(last, time)),
+            None => {
+                self.presses.push((program, time));
+                None
+            }
+        };
+        let recent = previous.is_some_and(|last| time.wrapping_sub(last) < REPEAT_INTERVAL);
+        !autorepeat && !recent
+    }
 }
 
 /// Códigos de tecla cuya lista de keysyms contiene `keysym`.
@@ -257,7 +390,8 @@ mod tests {
     }
 
     /// Tabla como la que produce `grab_bindings` con el mapa por defecto de
-    /// Xvfb: Escape = 9, Return = 36, j = 44, k = 45.
+    /// Xvfb: Escape = 9, Return = 36, j = 44, k = 45, d = 40, e = 26,
+    /// b = 56, n = 57 y Print = 107 y 218.
     fn bindings(num_lock: u16) -> Bindings {
         Bindings {
             keys: vec![
@@ -265,6 +399,13 @@ mod tests {
                 (44, MOD4, Action::FocusNext),
                 (45, MOD4, Action::FocusPrev),
                 (36, MOD4 | SHIFT, Action::Zoom),
+                (36, MOD4, Action::Launch(spawn::TERMINAL)),
+                (40, MOD4, Action::Launch(spawn::LAUNCHER)),
+                (26, MOD4, Action::Launch(spawn::FILES)),
+                (56, MOD4, Action::Launch(spawn::BROWSER)),
+                (57, MOD4, Action::Launch(spawn::EDITOR)),
+                (107, 0, Action::Launch(spawn::SCREENSHOT)),
+                (218, 0, Action::Launch(spawn::SCREENSHOT)),
             ],
             num_lock,
         }
@@ -278,8 +419,17 @@ mod tests {
         assert_eq!(b.action_for(44, m4), Some(Action::FocusNext));
         assert_eq!(b.action_for(45, m4), Some(Action::FocusPrev));
         assert_eq!(b.action_for(36, m4 | KeyButMask::SHIFT), Some(Action::Zoom));
-        // Mod4+Return queda libre (reservado para la terminal en F4).
-        assert_eq!(b.action_for(36, m4), None);
+        assert_eq!(b.action_for(36, m4), Some(Action::Launch(spawn::TERMINAL)));
+        assert_eq!(b.action_for(40, m4), Some(Action::Launch(spawn::LAUNCHER)));
+        assert_eq!(b.action_for(26, m4), Some(Action::Launch(spawn::FILES)));
+        assert_eq!(b.action_for(56, m4), Some(Action::Launch(spawn::BROWSER)));
+        assert_eq!(b.action_for(57, m4), Some(Action::Launch(spawn::EDITOR)));
+        for print in [107, 218] {
+            assert_eq!(
+                b.action_for(print, KeyButMask::from(0u16)),
+                Some(Action::Launch(spawn::SCREENSHOT))
+            );
+        }
     }
 
     #[test]
@@ -300,6 +450,12 @@ mod tests {
             assert_eq!(
                 b.action_for(9, m4 | KeyButMask::SHIFT | extra),
                 Some(Action::Exit)
+            );
+        }
+        for extra in [KeyButMask::LOCK, KeyButMask::MOD2] {
+            assert_eq!(
+                b.action_for(107, extra),
+                Some(Action::Launch(spawn::SCREENSHOT))
             );
         }
         // Sin Bloq Num asignado a Mod2, Mod2 cuenta como modificador.
@@ -325,6 +481,12 @@ mod tests {
             None
         );
         assert_eq!(b.action_for(10, m4), None);
+        // Los atajos de lanzamiento tampoco admiten modificadores de más.
+        assert_eq!(b.action_for(40, KeyButMask::from(0u16)), None);
+        assert_eq!(b.action_for(40, m4 | KeyButMask::SHIFT), None);
+        assert_eq!(b.action_for(57, m4 | KeyButMask::CONTROL), None);
+        assert_eq!(b.action_for(107, m4), None);
+        assert_eq!(b.action_for(107, KeyButMask::SHIFT), None);
     }
 
     #[test]
@@ -357,5 +519,86 @@ mod tests {
             (exit[0].modifiers, exit[0].keysym),
             (MOD4 | SHIFT, XK_ESCAPE)
         );
+    }
+
+    #[test]
+    fn atajos_de_lanzamiento() {
+        let expected: [(u16, Keysym, &str, &[&str]); 6] = [
+            (MOD4, XK_RETURN, "Mod4+Return", &["kitty"]),
+            (MOD4, XK_D, "Mod4+d", &["rofi", "-show", "drun"]),
+            (MOD4, XK_E, "Mod4+e", &["thunar"]),
+            (MOD4, XK_B, "Mod4+b", &["firefox"]),
+            (MOD4, XK_N, "Mod4+n", &["kitty", "-e", "nvim"]),
+            (0, XK_PRINT, "Print", &["flameshot", "gui"]),
+        ];
+        let launchers: Vec<_> = BINDINGS
+            .iter()
+            .filter_map(|b| match b.action {
+                Action::Launch(program) => Some((b, program)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(launchers.len(), expected.len());
+        for (binding, program) in &launchers {
+            let (modifiers, keysym, _, argv) = expected
+                .iter()
+                .find(|e| e.2 == binding.name)
+                .unwrap_or_else(|| panic!("atajo inesperado {}", binding.name));
+            assert_eq!((binding.modifiers, binding.keysym), (*modifiers, *keysym));
+            assert_eq!(spawn::PROGRAMS[*program].argv, *argv, "{}", binding.name);
+            assert!(!binding.required(), "{} es opcional", binding.name);
+        }
+        // Cada programa tiene exactamente un atajo.
+        for program in 0..spawn::PROGRAMS.len() {
+            assert_eq!(launchers.iter().filter(|(_, p)| *p == program).count(), 1);
+        }
+        // Los de control siguen siendo obligatorios.
+        for binding in BINDINGS
+            .iter()
+            .filter(|b| !matches!(b.action, Action::Launch(_)))
+        {
+            assert!(binding.required(), "{}", binding.name);
+        }
+    }
+
+    #[test]
+    fn repeticion_por_intervalo() {
+        let mut r = Repeats::default();
+        assert!(r.accept_at(0, 36, 1_000));
+        assert!(!r.accept_at(0, 36, 1_100));
+        // Se mide desde la última pulsación, aunque se ignorara.
+        assert!(!r.accept_at(0, 36, 1_350));
+        assert!(r.accept_at(0, 36, 1_650));
+        assert!(!r.accept_at(0, 36, 1_949));
+        assert!(r.accept_at(0, 36, 2_249));
+        // El intervalo es por atajo.
+        assert!(r.accept_at(1, 40, 2_250));
+        assert!(r.accept_at(2, 26, 2_260));
+    }
+
+    #[test]
+    fn repeticion_automatica_del_servidor() {
+        let mut r = Repeats::default();
+        assert!(r.accept_at(0, 36, 1_000));
+        // Tecla mantenida: tras el retardo, liberación y pulsación con la
+        // misma marca de tiempo.
+        for time in [1_660, 1_700, 1_740] {
+            r.release = Some((36, time));
+            assert!(!r.accept_at(0, 36, time), "{time}");
+        }
+        // Liberación real y nueva pulsación más tarde.
+        r.release = Some((36, 1_760));
+        assert!(r.accept_at(0, 36, 2_100));
+        // Una liberación de otra tecla no cuenta.
+        r.release = Some((40, 3_000));
+        assert!(r.accept_at(0, 36, 3_000));
+    }
+
+    #[test]
+    fn repeticion_con_desbordamiento_del_reloj() {
+        let mut r = Repeats::default();
+        assert!(r.accept_at(0, 36, u32::MAX - 100));
+        assert!(!r.accept_at(0, 36, 50));
+        assert!(r.accept_at(0, 36, 400));
     }
 }

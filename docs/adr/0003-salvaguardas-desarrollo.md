@@ -82,7 +82,7 @@ validación y la conexión no interpreten `DISPLAY` de forma distinta:
   pantallas que lista la respuesta de conexión
   (`x11rb-0.14.0/src/rust_connection/mod.rs:245-248`) y, si no existe,
   devuelve `InvalidScreen`; `src/connect.rs` (líneas 53-56) lo convierte en
-  el código 14. `src/main.rs` (líneas 57-60) repite la comprobación, con el
+  el código 14. `src/main.rs` (líneas 59-62) repite la comprobación, con el
   mismo código. Ninguna prueba de aceptación ha usado todavía una pantalla
   inexistente.
 - El parser acepta ceros a la izquierda y el signo `+` (`:05` y `:+5` dan
@@ -110,7 +110,7 @@ cookie registrada no se puede usar, y nunca se recurrirá a `-ac`.
 La propiedad `_CRIMSON_SANDBOX` de la ventana raíz debe coincidir con la
 variable de entorno `CRIMSON_SANDBOX_TOKEN`. Solo los scripts de prueba
 crean esa marca, con un valor aleatorio generado con `mcookie`. La variable
-se comprueba antes de abrir la conexión (`src/main.rs`, línea 53).
+se comprueba antes de abrir la conexión (`src/main.rs`, línea 55).
 
 - La propiedad debe ser de tipo `STRING` y formato 8, y su contenido debe
   coincidir byte a byte con el valor de la variable (por ejemplo,
@@ -121,9 +121,10 @@ se comprueba antes de abrir la conexión (`src/main.rs`, línea 53).
   que las comprobaciones no creen átomos en el servidor. Se aplica también
   a la capa 3.
 
-**Requisito futuro:** desde la fase en que el WM lance procesos (F4),
-`CRIMSON_SANDBOX_TOKEN` no deberá heredarse por los procesos hijos; se
-eliminará de su entorno. Todavía no está implementado.
+**Requisito de F4, cumplido:** `CRIMSON_SANDBOX_TOKEN` no se hereda por los
+procesos que lanza el WM: se elimina del entorno de cada hijo con
+`Command::env_remove`, sin modificar el del WM (`src/spawn.rs`; verificado
+en A34, ver ADR 0006).
 
 #### Capa 3: otro gestor presente
 
@@ -155,7 +156,9 @@ No es una capa de protección, sino información de diagnóstico. El WM
 registra a qué servidor se ha conectado (display, fabricante, release, ID
 de la raíz y tamaño de pantalla; verificado en A7). Los registros no
 vuelcan el entorno: el WM solo lee `DISPLAY` y `CRIMSON_SANDBOX_TOKEN`
-(`src/main.rs`, líneas 52-53) y nunca imprime el valor del token.
+(`src/main.rs`, líneas 54-55), y desde F4 `HOME`, como directorio de
+trabajo de los programas que lanza (ADR 0006). Nunca imprime el valor del
+token.
 
 ### Alcance y limitaciones
 
@@ -255,7 +258,7 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
 
 - **Errores X durante la ejecución:** los debidos a condiciones de carrera
   (`BadWindow`, `BadDrawable`, etc.) llegan como eventos de error; el WM los
-  registra y no termina (`src/wm.rs`, líneas 125-130). Desde F2, un error
+  registra y no termina (`src/wm.rs`, líneas 142-147). Desde F2, un error
   X en una consulta con respuesta sobre una ventana (por ejemplo,
   `GetWindowAttributes` de una ventana ya destruida) se registra y la
   ventana no se gestiona (ADR 0004). Solo la pérdida de la conexión lo
@@ -268,8 +271,10 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
   comportamiento por defecto, aceptable porque el WM aún no guarda estado.
   Un proceso terminado por una señal no devuelve un código de salida: la
   shell muestra 143 (SIGTERM) o 130 (SIGINT). **Pendiente:** ninguna prueba
-  ejercita todavía estas señales. La gestión limpia de señales se abordará
-  en F4.
+  ejercita todavía estas señales. La gestión limpia de señales no entró en
+  F4 (ADR 0006) y queda para una fase posterior; los programas lanzados
+  tienen su propio grupo de procesos y no reciben las señales dirigidas al
+  grupo del WM.
 
 ## Consecuencias
 

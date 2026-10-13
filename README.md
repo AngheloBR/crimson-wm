@@ -6,22 +6,25 @@ es un prototipo con un único diseño, master-stack (ver «Estado»).
 
 ## Estado
 
-Fase F3: foco y navegación por teclado sobre el mosaico master-stack.
-**Todavía no es un gestor de ventanas utilizable:** solo arranca en un
-servidor X de prueba que supere las salvaguardas del ADR 0003, coloca las
-ventanas normales en mosaico, deja flotantes los diálogos, gestiona el foco
-con el teclado y termina con el atajo provisional `Mod4+Shift+Escape`. No
-tiene ratón, decoraciones, escritorios virtuales, lanzador de programas ni
-configuración.
+Fase F4: lanzamiento de aplicaciones con atajos de teclado, sobre el foco
+por teclado y el mosaico master-stack. **Todavía no es un gestor de
+ventanas utilizable:** solo arranca en un servidor X de prueba que supere
+las salvaguardas del ADR 0003, coloca las ventanas normales en mosaico,
+deja flotantes los diálogos, gestiona el foco con el teclado, lanza seis
+programas fijos y termina con el atajo provisional `Mod4+Shift+Escape`. No
+tiene ratón, decoraciones, escritorios virtuales ni configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
 (2026-10-11). Últimos resultados registrados, todos del 2026-10-13 en Xvfb
-sobre el binario de depuración de F3 (detalles y limitaciones en los ADR
-0003, 0004 y 0005):
+sobre el binario de depuración de F4 (detalles y limitaciones en los ADR
+0003 a 0006):
 
-- Pruebas unitarias U1–U9 (48 pruebas de `cargo test`): pasaron.
-- Aceptación de F3: A22–A31 pasaron y **A32 quedó parcial**, porque la
-  consulta de la raíz de `:0` se omite deliberadamente.
+- Pruebas unitarias U1–U11 (62 pruebas de `cargo test`): pasaron.
+- Aceptación de F4: A33–A39 pasaron y **A40 quedó parcial**, porque la
+  consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
+  programas falsos, nunca las aplicaciones reales.
+- Regresión de F3: A22–A31 pasaron y **A32 quedó parcial** por el mismo
+  motivo.
 - Regresión de F2: A10–A20 pasaron y **A21 quedó parcial** por el mismo
   motivo.
 - Regresión de F1: A1–A8 pasaron y **A9 quedó parcial** por el mismo
@@ -67,12 +70,10 @@ raíz del servidor: `xeyes` usa una ventana con forma.*
 | `Mod4+Shift+Return` | La ventana enfocada pasa a maestra; si ya lo es, se intercambia con la segunda |
 | `Mod4+Shift+Escape` | Termina el WM (atajo provisional) |
 
-Combinaciones reservadas, **todavía sin implementar ni capturar** (el WM no
-lanza programas): `Mod4+Return` (terminal), `Mod4+d` (lanzador), `Mod4+e`
-(archivos), `Mod4+b` (navegador), `Mod4+n` (editor) y `Print` (capturas)
-para el lanzador de F4; `Mod4+h` y `Mod4+l` (foco a izquierda y derecha),
-`Mod4+w` (cerrar) y `Mod4+Shift+w` (forzar el cierre) para fases
-posteriores. Las órdenes previstas figuran en el ADR 0005.
+Combinaciones reservadas para fases posteriores, **todavía sin implementar
+ni capturar**: `Mod4+h` y `Mod4+l` (foco a izquierda y derecha), `Mod4+w`
+(cerrar) y `Mod4+Shift+w` (forzar el cierre). Las de aplicaciones se
+implementaron en F4 (ver «Lanzamiento de aplicaciones»).
 
 - Una ventana nueva recibe el foco al abrirse, salvo los paneles, avisos,
   menús y similares, que nunca lo reciben.
@@ -87,13 +88,42 @@ posteriores. Las órdenes previstas figuran en el ADR 0005.
 
 Detalles, casos límite y limitaciones en el ADR 0005.
 
+## Lanzamiento de aplicaciones (F4)
+
+| Atajo | Programa |
+|---|---|
+| `Mod4+Return` | `kitty` |
+| `Mod4+d` | `rofi -show drun` |
+| `Mod4+e` | `thunar` |
+| `Mod4+b` | `firefox` |
+| `Mod4+n` | `kitty -e nvim` |
+| `Print` | `flameshot gui` |
+
+- La tabla es fija hasta la fase de configuración. Cada programa se
+  ejecuta con su lista `argv`, sin shell ni expansión, buscándolo en el
+  `PATH` del WM.
+- Lanzar no bloquea el WM: un hilo lanza el programa y lo espera, así que
+  no quedan procesos zombis. Como máximo hay 64 programas supervisados a la
+  vez.
+- Si el programa no existe o no se puede ejecutar, el error se registra y
+  el WM sigue. Si falta la tecla de un atajo de lanzamiento, el WM avisa y
+  arranca sin él.
+- Una tecla mantenida o una doble pulsación en menos de 300 ms lanza un
+  solo programa.
+- Cada programa recibe el `DISPLAY` del servidor que gestiona el WM, sin
+  `CRIMSON_SANDBOX_TOKEN`, `WINDOWID` ni `DESKTOP_STARTUP_ID`, con la
+  entrada desde `/dev/null`, en su propio grupo de procesos y con `HOME`
+  como directorio de trabajo. Sigue en marcha cuando el WM termina.
+
+Detalles, casos límite y limitaciones en el ADR 0006.
+
 ## Arranque y eventos
 
-![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, adopta las ventanas visibles y atiende los eventos de mosaico y foco; :0 se rechaza](docs/images/crimson-wm-overview.svg)
+![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, adopta las ventanas visibles, atiende los eventos de mosaico y foco y lanza programas sin shell; :0 se rechaza](docs/images/crimson-wm-overview.svg)
 
 *Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 a
-0005. No es una captura ni demuestra una ejecución; los resultados de las
-pruebas están en los ADR 0003 a 0005.*
+0006. No es una captura ni demuestra una ejecución; los resultados de las
+pruebas están en los ADR 0003 a 0006.*
 
 ## Principios
 
@@ -121,7 +151,9 @@ pruebas están en los ADR 0003 a 0005.*
 | `x11-utils` | `xprop`, `xwininfo`, `xmessage`, `xlsatoms`, `xev` | Clientes y comprobaciones de prueba | Instalado |
 | `x11-apps` | `xlogo`, `xclock` | Clientes de prueba de F2 (A19) y F3 (A28) | Instalado |
 | `xdotool` | `xdotool` | Simulación de teclado en pruebas | Instalado |
-| `procps` | `pgrep` | Comprobación de procesos | Instalado |
+| `procps` | `pgrep`, `ps` | Comprobación de procesos (`ps`: hijos del WM en F4) | Instalado |
+| `diffutils` | `cmp` | Verificación de los programas falsos de F4 | Instalado |
+| `x11-xserver-utils` | `xmodmap` | Quitar `Print` del mapa de teclado de un Xvfb de prueba (A35) | Instalado |
 | `shellcheck` | `shellcheck` | Análisis de los scripts de prueba | Instalado |
 | `bash`, `coreutils`, `findutils`, `grep`, `mawk`, `mount` | `bash`, `timeout`, `mktemp`, `find`, `grep`, `awk`, `mount` | Ejecución del arnés de aceptación | Instalado (paquetes base) |
 | `xserver-xephyr` | `Xephyr` | Pruebas visuales | **Aplazado** (no instalado) |
@@ -141,7 +173,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U9)
+### Unitarias (U1–U11)
 
 ```sh
 cargo test --locked
@@ -211,6 +243,32 @@ tests/acceptance/f3/run.sh [BINARIO]
 - Los resultados se guardan en un directorio nuevo `crimson-f3.XXXXXX`
   dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
 
+### Aceptación de F4 (A33–A40)
+
+```sh
+cargo build --locked
+tests/acceptance/f4/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas y código de salida que los arneses
+  anteriores, cuyas guardas y funciones reutiliza.
+- **Nunca ejecuta las aplicaciones reales.** El `PATH` del WM es un único
+  directorio temporal con copias de `tests/acceptance/f4/fake.sh` llamadas
+  `kitty`, `rofi`, `thunar`, `firefox`, `flameshot` y `nvim`, que registran
+  cómo las lanzó el WM. Antes de arrancarlo se comprueba cómo se resuelve
+  cada nombre; si alguno pudiera resolverse fuera de ese directorio, la
+  prueba no se ejecuta.
+- A40 equivale a A9 y queda siempre parcial; además comprueba que no queda
+  ningún programa falso en marcha.
+- Los resultados se guardan en un directorio nuevo `crimson-f4.XXXXXX`
+  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+
+Desde F4, todos los arneses arrancan el WM con `env -i` y un entorno
+mínimo: `DISPLAY` y `XAUTHORITY` del Xvfb de la prueba, el token, y `PATH`,
+`HOME`, `XDG_*` y `DBUS_SESSION_BUS_ADDRESS` apuntando a directorios
+temporales de la prueba (en F1–F3, con el `PATH` vacío). Nada del entorno
+de la sesión real llega al WM ni a lo que lance.
+
 ### Servidores de prueba
 
 - **Xvfb**, mediante `xvfb-run -a`. Según `/usr/bin/xvfb-run` en Debian 13,
@@ -239,6 +297,8 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK` o `BadAccess`). Son
   principal y códigos de salida.
 - `docs/adr/0004-mosaico-master-stack.md`: motor de mosaico de F2.
 - `docs/adr/0005-foco-y-atajos.md`: foco y navegación por teclado de F3.
+- `docs/adr/0006-lanzamiento-de-aplicaciones.md`: lanzamiento de
+  aplicaciones de F4.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior
@@ -259,9 +319,10 @@ existen (o existirán):
   `/tmp/xvfb-run.*`), `/tmp/.X<N>-lock` y `/tmp/.X11-unix/X<N>`. Esos
   archivos se pueden borrar después de comprobar con `pgrep -a Xvfb` (o
   `pgrep -a Xephyr`) que no queda ningún servidor en ese display.
-- Los resultados de las pruebas de aceptación, en `$TMPDIR/crimson-f1.*`,
-  `$TMPDIR/crimson-f2.*` y `$TMPDIR/crimson-f3.*` (o en `/tmp`). Los
-  arneses no los borran; se pueden eliminar cuando ya no se necesiten. Los
+- Los resultados de las pruebas de aceptación, en `$TMPDIR/crimson-f1.*`
+  a `$TMPDIR/crimson-f4.*` (o en `/tmp`), con el entorno temporal de cada
+  prueba (`*-entorno/`). Los arneses no los borran; se pueden eliminar
+  cuando ya no se necesiten. Los
   espacios de nombres de `unshare` y el tmpfs que se monta dentro
   desaparecen al terminar.
 

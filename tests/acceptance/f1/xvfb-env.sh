@@ -1,13 +1,14 @@
 # shellcheck shell=bash
 # Preparación común de las pruebas que se ejecutan dentro de un Xvfb nuevo
-# (F1 y F2). La cargan xvfb-case.sh de cada fase, después de lib.sh, con
+# (F1 a F4). La cargan xvfb-case.sh de cada fase, después de lib.sh, con
 # BIN, OUT y CASE definidas, como orden de `xvfb-run` (Debian 13), que fija
 # DISPLAY y XAUTHORITY.
 #
 # Define XVFB_PID, SIZE (pantalla, p. ej. 1280x720), N (número de display),
-# CRIMSON_SANDBOX_TOKEN y las funciones precondition, set_marker,
-# require_ready, etc. Mantiene un cliente pasivo (HOLD) durante toda la
-# prueba y registra el código de salida del script en RUNS.
+# CRIMSON_SANDBOX_TOKEN, el entorno aislado del WM (SANDBOX, WM_ENV) y las
+# funciones precondition, set_marker, require_ready, isolated, etc. Mantiene
+# un cliente pasivo (HOLD) durante toda la prueba y registra el código de
+# salida del script en RUNS.
 
 HOLD=
 on_exit() {
@@ -58,6 +59,53 @@ echo "$CASE: DISPLAY=$DISPLAY, Xvfb pid $XVFB_PID, pantalla $SIZE, -auth <cookie
 N=${DISPLAY#:}
 TOKEN=$(mcookie)
 export CRIMSON_SANDBOX_TOKEN=$TOKEN
+
+# Entorno del WM (ADR 0006). start_wm lo ejecuta con `env -i` y solo estas
+# variables: nada de la sesión real llega al WM ni a los programas que
+# lance. Su PATH contiene únicamente $SANDBOX/bin, vacío salvo en F4, donde
+# xvfb-case.sh copia allí los programas falsos (f4/fake.sh). HOME, XDG_* y
+# el bus de D-Bus apuntan a directorios temporales de esta prueba; el bus no
+# existe.
+SANDBOX=$OUT/$CASE-entorno
+mkdir -p "$SANDBOX"/{bin,home,config,cache,data,state,lanzamientos}
+mkdir -m 700 "$SANDBOX/runtime"
+# shellcheck disable=SC2034 # la usa start_wm (lib.sh)
+WM_ENV=(
+    DISPLAY="$DISPLAY"
+    XAUTHORITY="$XAUTHORITY"
+    CRIMSON_SANDBOX_TOKEN="$TOKEN"
+    PATH="$SANDBOX/bin"
+    HOME="$SANDBOX/home"
+    XDG_CONFIG_HOME="$SANDBOX/config"
+    XDG_CACHE_HOME="$SANDBOX/cache"
+    XDG_DATA_HOME="$SANDBOX/data"
+    XDG_STATE_HOME="$SANDBOX/state"
+    XDG_RUNTIME_DIR="$SANDBOX/runtime"
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$SANDBOX/runtime/sin-bus"
+)
+# Aplicaciones de los atajos de lanzamiento y las que lanzarían a su vez.
+APPS=(kitty rofi thunar firefox flameshot nvim)
+FAKE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../f4" && pwd)/fake.sh
+# resolve aplicación: ruta con la que la encontraría el WM (execvp en su
+# PATH), vacía si no hay ninguna. Se resuelve en un bash nuevo, sin tabla
+# de órdenes recordadas ni más entorno que ese PATH.
+# shellcheck disable=SC2016 # $1 lo expande el bash nuevo
+resolve() { env -i PATH="$SANDBOX/bin" "$BASH" -c 'command -v -- "$1"' _ "$1"; }
+# isolated: el PATH del WM es un único directorio de esta prueba que solo
+# contiene copias exactas de f4/fake.sh, y ninguna aplicación se resuelve
+# fuera de él.
+isolated() {
+    local entry app found
+    [[ -d $SANDBOX/bin && ! -L $SANDBOX/bin && -f $FAKE ]] || return 1
+    for entry in "$SANDBOX"/bin/* "$SANDBOX"/bin/.[!.]*; do
+        [[ -e $entry || -L $entry ]] || continue
+        [[ -f $entry && ! -L $entry ]] && cmp -s "$entry" "$FAKE" || return 1
+    done
+    for app in "${APPS[@]}"; do
+        found=$(resolve "$app")
+        [[ -z $found || $found == "$SANDBOX/bin/$app" ]] || return 1
+    done
+}
 
 # Xvfb se reinicia, y borra propiedades y átomos de la raíz, cuando se
 # desconecta su último cliente (ADR 0003). Un cliente pasivo mantiene el

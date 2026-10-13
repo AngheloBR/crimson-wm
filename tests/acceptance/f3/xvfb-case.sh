@@ -118,13 +118,16 @@ A23)
 A24)
     start
     three_windows
-    # Mod4+Return no se captura (reservado para F4): la pulsación llega a la
-    # ventana enfocada, que la registra, y el mosaico no cambia.
+    # Desde F4 (ADR 0006), Mod4+Return lanza la terminal y la pulsación ya
+    # no llega a la ventana enfocada. En F3 el PATH del WM está vacío: el
+    # lanzamiento falla, se registra y ni el WM ni el mosaico cambian.
     key super+Return
-    free_return() { grep -q 'state 0x40, keycode 36 (keysym 0xff0d, Return)' "$OUT/$CASE-C.out"; }
+    launch_failed() { grep -q 'no se pudo lanzar «terminal» (kitty)' "$WM_LOG"; }
     verdict=FALLA
-    wait_for free_return && layout_is "A=0 0 640 720" "B=640 0 640 360" "C=640 360 640 360" && verdict=OK
-    record A24-super-return-libre "C recibe Mod4+Return; mosaico A, B, C" "$(grep -c 'keycode 36 (keysym 0xff0d, Return)' "$OUT/$CASE-C.out") eventos de Return (pulsación y liberación) en C; A=$(geometry A)" "$verdict" "registro de xev de C"
+    wait_for launch_failed && kill -0 "$WM_PID" &&
+        ! grep -q 'keycode 36 (keysym 0xff0d, Return)' "$OUT/$CASE-C.out" &&
+        layout_is "A=0 0 640 720" "B=640 0 640 360" "C=640 360 640 360" && verdict=OK
+    record A24-super-return-capturado "C no recibe Mod4+Return; lanzamiento fallido registrado; mosaico A, B, C" "$(grep -c 'keycode 36 (keysym 0xff0d, Return)' "$OUT/$CASE-C.out") eventos de Return en C; $(grep -o 'no se pudo lanzar «terminal» (kitty): [^(]*' "$WM_LOG"); A=$(geometry A)" "$verdict" "registros de xev de C y del WM"
     key super+shift+Return
     expect_layout A24-maestra "C=0 0 640 720" "A=640 0 640 360" "B=640 360 640 360"
     expect_focus A24-foco "foco=C activa=C"

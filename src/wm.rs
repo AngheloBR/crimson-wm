@@ -1,8 +1,9 @@
 //! Bucle de eventos (ADR 0004 y 0005): las ventanas normales se colocan en
 //! mosaico master-stack y se reorganizan al abrirse, retirarse o destruirse;
 //! los diálogos y demás ventanas auxiliares quedan flotantes. El foco se
-//! gestiona con el teclado (`Mod4+j`, `Mod4+k`, `Mod4+Shift+Return`) y el WM
-//! termina con el atajo provisional `Mod4+Shift+Escape`.
+//! gestiona con el teclado (`Mod4+j`, `Mod4+k`, `Mod4+Shift+Return`), los
+//! atajos de lanzamiento abren aplicaciones (ADR 0006) y el WM termina con el
+//! atajo provisional `Mod4+Shift+Escape`.
 
 use x11rb::connection::{Connection, SequenceNumber};
 use x11rb::errors::ReplyError;
@@ -16,9 +17,11 @@ use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
 
 use crate::clients::{self, Class, Clients, Direction, InputModel, Kind, WindowInfo, WindowTypes};
+use crate::display::Target;
 use crate::error::Fatal;
-use crate::keys::{self, Action};
+use crate::keys::{self, Action, Repeats};
 use crate::layout::{self, Rect};
+use crate::spawn::Launcher;
 
 x11rb::atom_manager! {
     Atoms: AtomsCookie {
@@ -56,8 +59,13 @@ const POINTER_ROOT: Window = 1;
 /// Se llama solo después de superar las capas 1 a 4 del ADR 0003: registrar
 /// los átomos los crea en el servidor, y un servidor rechazado no debe
 /// quedar modificado.
-pub fn run(conn: &impl Connection, screen: &Screen) -> Result<(), Fatal> {
+///
+/// `target` es el display validado por la capa 1: los programas lanzados
+/// reciben ese `DISPLAY`.
+pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(), Fatal> {
     let bindings = keys::grab_bindings(conn, screen.root)?;
+    let launcher = Launcher::new(target);
+    let mut repeats = Repeats::default();
     let atoms = Atoms::new(conn)
         .map_err(Fatal::lost)?
         .reply()
@@ -119,8 +127,17 @@ pub fn run(conn: &impl Connection, screen: &Screen) -> Result<(), Fatal> {
                 Some(Action::FocusNext) => wm.cycle(Direction::Next, event.time)?,
                 Some(Action::FocusPrev) => wm.cycle(Direction::Prev, event.time)?,
                 Some(Action::Zoom) => wm.zoom()?,
+                // El lanzamiento no espera al programa ni puede fallar.
+                Some(Action::Launch(program)) => {
+                    if repeats.accept(program, &event) {
+                        launcher.launch(program);
+                    }
+                }
                 None => {}
             },
+            // Solo llegan las de las teclas capturadas, mientras dura la
+            // captura activada por la pulsación.
+            Event::KeyRelease(event) => repeats.released(&event),
             // Las condiciones de carrera (BadWindow, etc.) no terminan el WM.
             Event::Error(error) => {
                 eprintln!(
