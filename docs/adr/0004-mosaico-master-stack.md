@@ -173,6 +173,13 @@ repositorio.
 La regresión de F1 sobre el mismo código se describe en el ADR 0003
 («Regresión de F1 con el código de F2»).
 
+**Regresión de F2 con el código de F3** (ADR 0005), el 2026-10-13: **47
+OK, 0 FALLA y 1 OMITIDA**; código de salida 0. En F3, las funciones de
+ventanas del arnés pasaron de `f2/xvfb-case.sh` a `f2/windows.sh`, para
+reutilizarlas en `tests/acceptance/f3/`; `open_window` admite ahora otra
+orden en lugar de `xmessage` y guarda su salida en el directorio de
+resultados. Los identificadores de las comprobaciones no cambian.
+
 ## Limitaciones conocidas
 
 - **Carreras con `BadWindow`:** en A19 ninguna ventana desapareció entre el
@@ -183,9 +190,10 @@ La regresión de F1 sobre el mismo código se describe en el ADR 0003
 - **Espera fija en A15:** `xev` no indica cuándo ha seleccionado los
   eventos; se espera 1 s antes de enviar las peticiones.
 - **Sin foco ni navegación por teclado:** el foco sigue al puntero, como en
-  un servidor sin WM.
+  un servidor sin WM. *Resuelto en F3 (ADR 0005).*
 - **Sin `WM_STATE` ni EWMH propios** (`_NET_SUPPORTING_WM_CHECK`,
   `_NET_CLIENT_LIST`…): algunas aplicaciones y herramientas los esperan.
+  Desde F3 solo se publica `_NET_ACTIVE_WINDOW` (ADR 0005).
 - **Paneles y escritorio:** `DOCK` y `DESKTOP` quedan flotantes; no se
   reserva espacio para paneles (struts) ni se envía el escritorio al fondo.
 - **Pantalla completa** (`_NET_WM_STATE_FULLSCREEN`): no se atiende; esas

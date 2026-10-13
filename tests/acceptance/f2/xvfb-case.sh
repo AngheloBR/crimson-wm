@@ -13,54 +13,8 @@ source "$F1/lib.sh"
 # shellcheck source=../f1/xvfb-env.sh
 source "$F1/xvfb-env.sh"
 
-declare -A PIDS WIDS
-
-viewable() { xwininfo -name "$1" | grep -q 'Map State: IsViewable'; }
-# open_window nombre: abre un xmessage con ese título y espera a que sea
-# visible. Con el WM en marcha, ya está colocado al mapearse.
-open_window() {
-    xmessage -title "$1" -geometry 200x100+10+10 "$1" >/dev/null 2>&1 &
-    PIDS[$1]=$!
-    precondition "ventana $1 visible" wait_for viewable "$1"
-    WIDS[$1]=$(xwininfo -name "$1" | awk '/Window id:/ {print $4}')
-}
-# geometry nombre: «x y ancho alto» de la ventana.
-geometry() {
-    xwininfo -id "${WIDS[$1]}" 2>/dev/null |
-        awk '/Absolute upper-left X|Absolute upper-left Y|Width:|Height:/ {printf "%s%s", sep, $NF; sep = " "}'
-}
-layout_is() {
-    local pair
-    for pair in "$@"; do
-        [[ $(geometry "${pair%%=*}") == "${pair#*=}" ]] || return 1
-    done
-}
-# expect_layout id nombre=geometría...: espera hasta 5 s a que cada ventana
-# tenga su geometría, con el WM en marcha (sin WM, el servidor aplicaría
-# cualquier geometría pedida).
-expect_layout() {
-    local id=$1 verdict=FALLA got pair
-    shift
-    wait_for layout_is "$@" && kill -0 "$WM_PID" && verdict=OK
-    got=$(for pair in "$@"; do printf '%s=%s; ' "${pair%%=*}" "$(geometry "${pair%%=*}")"; done)
-    record "$id" "$*" "${got%; }" "$verdict" "xwininfo, WM en marcha"
-}
-# retire nombre: desmapea la ventana y espera a que el WM deje de
-# gestionarla. Así se le pueden poner propiedades antes de volver a mapearla.
-retire() {
-    xdotool windowunmap "${WIDS[$1]}"
-    precondition "ventana $1 retirada" wait_for grep -q "ventana ${WIDS[$1]} retirada" "$WM_LOG"
-}
-start() {
-    set_marker "$TOKEN"
-    start_wm "$CASE"
-    require_ready
-}
-stop() {
-    xdotool key super+shift+Escape
-    wait_wm 0 'atajo de salida recibido'
-    ((${#PIDS[@]})) && kill "${PIDS[@]}" 2>/dev/null
-}
+# shellcheck source=windows.sh
+source "$(dirname "$0")/windows.sh"
 
 if [[ $CASE == A20 ]]; then
     precondition "pantalla 1279x719" test "$SIZE" = 1279x719

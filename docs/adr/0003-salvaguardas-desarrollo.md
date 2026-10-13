@@ -11,6 +11,11 @@
   `SubstructureNotify`, que necesita el mosaico (ADR 0004); la regresión de
   F1 sobre el código de F2 se describe en «Regresión de F1 con el código
   de F2».
+- **Actualización F3 (2026-10-13):** los atajos de foco (ADR 0005) se
+  capturan con la misma regla que el de salida (código 14 si falla), y el WM
+  publica `_NET_ACTIVE_WINDOW` en la raíz después de superar las cuatro
+  capas y lo borra al salir. Las capas no cambian; la regresión de F1 sobre
+  el código de F3 también se describe en esa sección.
 
 ## Contexto
 
@@ -245,12 +250,12 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
 | 11 | `DISPLAY` ausente o vacío; socket inexistente o inaccesible; sin cookie `MIT-MAGIC-COOKIE-1` para el display en el archivo de autorización (`XAUTHORITY` o, si no está definida, `$HOME/.Xauthority`), o imposible determinar o leer ese archivo; o el servidor rechaza la conexión inicial (respuesta `Failed` o `Authenticate`, por ejemplo una cookie errónea) o hay un error de E/S durante ella |
 | 12 | Ya hay otro gestor (`_NET_SUPPORTING_WM_CHECK` o `BadAccess`) |
 | 13 | Se perdió la conexión X durante la ejecución |
-| 14 | Error de protocolo inesperado al arrancar: por ejemplo, la pantalla indicada no existe, ningún código de tecla produce `Escape` o falla la captura del atajo de salida |
+| 14 | Error de protocolo inesperado al arrancar: por ejemplo, la pantalla indicada no existe, ningún código de tecla produce la tecla de un atajo o falla la captura de un atajo (el de salida y, desde F3, los de foco del ADR 0005) |
 | 101 | `panic` de Rust con `panic = "unwind"` (el valor por defecto, que el proyecto no cambia). Se considera un bug; A9 comprueba que no ocurra |
 
 - **Errores X durante la ejecución:** los debidos a condiciones de carrera
   (`BadWindow`, `BadDrawable`, etc.) llegan como eventos de error; el WM los
-  registra y no termina (`src/wm.rs`, líneas 100-105). Desde F2, un error
+  registra y no termina (`src/wm.rs`, líneas 125-130). Desde F2, un error
   X en una consulta con respuesta sobre una ventana (por ejemplo,
   `GetWindowAttributes` de una ventana ya destruida) se registra y la
   ventana no se gestiona (ADR 0004). Solo la pérdida de la conexión lo
@@ -431,3 +436,7 @@ Cambios en el arnés de F1 hechos en F2:
   comprobaciones de A9 a la función `session_checks` de `lib.sh`, para
   reutilizarlas en `tests/acceptance/f2/`. Los identificadores de las
   comprobaciones no cambian.
+
+La misma regresión, repetida el 2026-10-13 sobre el binario de depuración
+de F3 (ADR 0005), dio el mismo resultado: **46 OK, 0 FALLA y 1 OMITIDA**;
+código de salida 0. El arnés de F1 no cambió en F3.

@@ -1,5 +1,6 @@
-//! Atajo provisional de salida `Mod4+Shift+Escape` (ADR 0003), capturado en
-//! la raíz también con Bloq Mayús y Bloq Num activos.
+//! Atajos de teclado (ADR 0005): una tabla fija capturada en la raíz,
+//! también con Bloq Mayús y Bloq Num activos. Incluye el atajo provisional
+//! de salida `Mod4+Shift+Escape` (ADR 0003).
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
@@ -9,6 +10,9 @@ use x11rb::protocol::xproto::{
 use crate::error::Fatal;
 
 const XK_ESCAPE: Keysym = 0xff1b;
+const XK_RETURN: Keysym = 0xff0d;
+const XK_J: Keysym = 0x006a;
+const XK_K: Keysym = 0x006b;
 const XK_NUM_LOCK: Keysym = 0xff7f;
 
 // Máscaras de modificadores del protocolo X11 (`ModMask`).
@@ -21,23 +25,97 @@ const ALL_MODIFIERS: u16 = 0x00ff;
 /// Modificadores que distinguen un atajo. `Lock` (Bloq Mayús) y el
 /// modificador de Bloq Num se ignoran.
 const RELEVANT_MODIFIERS: u16 = ALL_MODIFIERS & !LOCK;
-const EXIT_MODIFIERS: u16 = MOD4 | SHIFT;
 
-pub struct ExitKey {
-    keycodes: Vec<Keycode>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Termina el WM con el código 0.
+    Exit,
+    /// Enfoca la siguiente ventana del orden de navegación.
+    FocusNext,
+    /// Enfoca la anterior.
+    FocusPrev,
+    /// Convierte la ventana enfocada en la maestra.
+    Zoom,
+}
+
+struct Binding {
+    /// Modificadores exactos, sin Bloq Mayús ni Bloq Num.
+    modifiers: u16,
+    keysym: Keysym,
+    name: &'static str,
+    action: Action,
+}
+
+/// Todos los atajos son obligatorios: si alguno no se puede capturar, el WM
+/// no arranca (código 14).
+const BINDINGS: &[Binding] = &[
+    Binding {
+        modifiers: MOD4 | SHIFT,
+        keysym: XK_ESCAPE,
+        name: "Mod4+Shift+Escape",
+        action: Action::Exit,
+    },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_J,
+        name: "Mod4+j",
+        action: Action::FocusNext,
+    },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_K,
+        name: "Mod4+k",
+        action: Action::FocusPrev,
+    },
+    Binding {
+        modifiers: MOD4 | SHIFT,
+        keysym: XK_RETURN,
+        name: "Mod4+Shift+Return",
+        action: Action::Zoom,
+    },
+];
+
+/// Combinaciones reservadas para fases posteriores (ADR 0005). No se
+/// capturan: hasta entonces llegan a la ventana enfocada. Solo las usan las
+/// pruebas, para comprobar que la tabla no las ocupa.
+#[cfg(test)]
+const RESERVED: &[(u16, Keysym)] = &[
+    (MOD4, XK_RETURN),      // Terminal (F4).
+    (MOD4, 0x0064),         // d: lanzador (F4).
+    (MOD4, 0x0065),         // e: archivos (F4).
+    (MOD4, 0x0062),         // b: navegador (F4).
+    (MOD4, 0x006e),         // n: editor (F4).
+    (0, 0xff61),            // Print: capturas (F4).
+    (MOD4, 0x0068),         // h: foco a la izquierda.
+    (MOD4, 0x006c),         // l: foco a la derecha.
+    (MOD4, 0x0077),         // w: cerrar la ventana.
+    (MOD4 | SHIFT, 0x0077), // Shift+w: forzar el cierre.
+];
+
+/// Atajos capturados: código de tecla, modificadores exactos y acción.
+pub struct Bindings {
+    keys: Vec<(Keycode, u16, Action)>,
     num_lock: u16,
 }
 
-impl ExitKey {
-    /// Indica si la pulsación corresponde al atajo de salida.
-    pub fn matches(&self, event: &KeyPressEvent) -> bool {
-        self.keycodes.contains(&event.detail) && is_exit_combination(event.state, self.num_lock)
+impl Bindings {
+    /// Acción del atajo pulsado, si lo es.
+    pub fn action(&self, event: &KeyPressEvent) -> Option<Action> {
+        self.action_for(event.detail, event.state)
+    }
+
+    fn action_for(&self, keycode: Keycode, state: KeyButMask) -> Option<Action> {
+        let modifiers = relevant_modifiers(state, self.num_lock);
+        self.keys
+            .iter()
+            .find(|&&(k, m, _)| k == keycode && m == modifiers)
+            .map(|&(_, _, action)| action)
     }
 }
 
-/// Captura `Mod4+Shift+Escape` en la raíz, también con Bloq Mayús y Bloq Num
-/// activos.
-pub fn grab_exit_key(conn: &impl Connection, root: Window) -> Result<ExitKey, Fatal> {
+/// Captura en la raíz todos los atajos de la tabla, también con Bloq Mayús
+/// y Bloq Num activos.
+pub fn grab_bindings(conn: &impl Connection, root: Window) -> Result<Bindings, Fatal> {
     let setup = conn.setup();
     let min = setup.min_keycode;
     let count = setup
@@ -57,32 +135,37 @@ pub fn grab_exit_key(conn: &impl Connection, root: Window) -> Result<ExitKey, Fa
         .map_err(|e| Fatal::startup("GetModifierMapping", e))?;
 
     let per_keycode = mapping.keysyms_per_keycode;
-    let keycodes = keycodes_for(XK_ESCAPE, min, per_keycode, &mapping.keysyms);
-    if keycodes.is_empty() {
-        return Err(Fatal::Startup(
-            "ningún código de tecla produce Escape; no se puede capturar el atajo de salida".into(),
-        ));
-    }
     let num_lock_keycodes = keycodes_for(XK_NUM_LOCK, min, per_keycode, &mapping.keysyms);
     let num_lock = modifier_mask_for(&num_lock_keycodes, &modifiers.keycodes);
 
-    for &keycode in &keycodes {
-        for extra in lock_variants(num_lock) {
-            conn.grab_key(
-                false,
-                root,
-                ModMask::from(EXIT_MODIFIERS | extra),
-                keycode,
-                GrabMode::ASYNC,
-                GrabMode::ASYNC,
-            )
-            .map_err(Fatal::lost)?
-            .check()
-            .map_err(|e| Fatal::startup("GrabKey(Mod4+Shift+Escape)", e))?;
+    let mut keys = Vec::new();
+    for binding in BINDINGS {
+        let keycodes = keycodes_for(binding.keysym, min, per_keycode, &mapping.keysyms);
+        if keycodes.is_empty() {
+            return Err(Fatal::Startup(format!(
+                "ningún código de tecla produce la tecla de {}; no se puede capturar el atajo",
+                binding.name
+            )));
+        }
+        for &keycode in &keycodes {
+            for extra in lock_variants(num_lock) {
+                conn.grab_key(
+                    false,
+                    root,
+                    ModMask::from(binding.modifiers | extra),
+                    keycode,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                )
+                .map_err(Fatal::lost)?
+                .check()
+                .map_err(|e| Fatal::startup(&format!("GrabKey({})", binding.name), e))?;
+            }
+            keys.push((keycode, binding.modifiers, binding.action));
         }
     }
 
-    Ok(ExitKey { keycodes, num_lock })
+    Ok(Bindings { keys, num_lock })
 }
 
 /// Códigos de tecla cuya lista de keysyms contiene `keysym`.
@@ -126,8 +209,9 @@ fn lock_variants(num_lock: u16) -> Vec<u16> {
     variants
 }
 
-fn is_exit_combination(state: KeyButMask, num_lock: u16) -> bool {
-    u16::from(state) & RELEVANT_MODIFIERS & !num_lock == EXIT_MODIFIERS
+/// Modificadores de una pulsación sin Bloq Mayús, Bloq Num ni botones.
+fn relevant_modifiers(state: KeyButMask, num_lock: u16) -> u16 {
+    u16::from(state) & RELEVANT_MODIFIERS & !num_lock
 }
 
 #[cfg(test)]
@@ -172,34 +256,106 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reconoce_el_atajo_de_salida() {
-        let m4_shift = KeyButMask::MOD4 | KeyButMask::SHIFT;
-        assert!(is_exit_combination(m4_shift, NUM_LOCK_MOD2));
-        assert!(is_exit_combination(
-            m4_shift | KeyButMask::LOCK,
-            NUM_LOCK_MOD2
-        ));
-        assert!(is_exit_combination(
-            m4_shift | KeyButMask::MOD2,
-            NUM_LOCK_MOD2
-        ));
-        assert!(is_exit_combination(
-            m4_shift | KeyButMask::BUTTON1,
-            NUM_LOCK_MOD2
-        ));
+    /// Tabla como la que produce `grab_bindings` con el mapa por defecto de
+    /// Xvfb: Escape = 9, Return = 36, j = 44, k = 45.
+    fn bindings(num_lock: u16) -> Bindings {
+        Bindings {
+            keys: vec![
+                (9, MOD4 | SHIFT, Action::Exit),
+                (44, MOD4, Action::FocusNext),
+                (45, MOD4, Action::FocusPrev),
+                (36, MOD4 | SHIFT, Action::Zoom),
+            ],
+            num_lock,
+        }
+    }
 
-        assert!(!is_exit_combination(KeyButMask::MOD4, NUM_LOCK_MOD2));
-        assert!(!is_exit_combination(KeyButMask::SHIFT, NUM_LOCK_MOD2));
-        assert!(!is_exit_combination(
-            m4_shift | KeyButMask::CONTROL,
-            NUM_LOCK_MOD2
-        ));
-        assert!(!is_exit_combination(
-            m4_shift | KeyButMask::MOD1,
-            NUM_LOCK_MOD2
-        ));
+    #[test]
+    fn reconoce_cada_atajo() {
+        let b = bindings(NUM_LOCK_MOD2);
+        let m4 = KeyButMask::MOD4;
+        assert_eq!(b.action_for(9, m4 | KeyButMask::SHIFT), Some(Action::Exit));
+        assert_eq!(b.action_for(44, m4), Some(Action::FocusNext));
+        assert_eq!(b.action_for(45, m4), Some(Action::FocusPrev));
+        assert_eq!(b.action_for(36, m4 | KeyButMask::SHIFT), Some(Action::Zoom));
+        // Mod4+Return queda libre (reservado para la terminal en F4).
+        assert_eq!(b.action_for(36, m4), None);
+    }
+
+    #[test]
+    fn ignora_bloqueos_y_botones() {
+        let b = bindings(NUM_LOCK_MOD2);
+        let m4 = KeyButMask::MOD4;
+        for extra in [
+            KeyButMask::LOCK,
+            KeyButMask::MOD2,
+            KeyButMask::LOCK | KeyButMask::MOD2,
+            KeyButMask::BUTTON1,
+        ] {
+            assert_eq!(b.action_for(44, m4 | extra), Some(Action::FocusNext));
+            assert_eq!(
+                b.action_for(36, m4 | KeyButMask::SHIFT | extra),
+                Some(Action::Zoom)
+            );
+            assert_eq!(
+                b.action_for(9, m4 | KeyButMask::SHIFT | extra),
+                Some(Action::Exit)
+            );
+        }
         // Sin Bloq Num asignado a Mod2, Mod2 cuenta como modificador.
-        assert!(!is_exit_combination(m4_shift | KeyButMask::MOD2, 0));
+        assert_eq!(bindings(0).action_for(44, m4 | KeyButMask::MOD2), None);
+    }
+
+    #[test]
+    fn exige_los_modificadores_exactos() {
+        let b = bindings(NUM_LOCK_MOD2);
+        let m4 = KeyButMask::MOD4;
+        assert_eq!(b.action_for(44, KeyButMask::from(0u16)), None);
+        assert_eq!(b.action_for(44, m4 | KeyButMask::SHIFT), None);
+        assert_eq!(b.action_for(44, m4 | KeyButMask::CONTROL), None);
+        assert_eq!(
+            b.action_for(36, m4 | KeyButMask::SHIFT | KeyButMask::MOD1),
+            None
+        );
+        assert_eq!(b.action_for(36, KeyButMask::SHIFT), None);
+        assert_eq!(b.action_for(9, m4), None);
+        assert_eq!(b.action_for(9, KeyButMask::SHIFT), None);
+        assert_eq!(
+            b.action_for(9, m4 | KeyButMask::SHIFT | KeyButMask::CONTROL),
+            None
+        );
+        assert_eq!(b.action_for(10, m4), None);
+    }
+
+    #[test]
+    fn la_tabla_no_tiene_atajos_repetidos() {
+        for (i, a) in BINDINGS.iter().enumerate() {
+            assert_eq!(a.modifiers & !RELEVANT_MODIFIERS, 0, "{}", a.name);
+            for b in &BINDINGS[i + 1..] {
+                assert!(
+                    (a.modifiers, a.keysym) != (b.modifiers, b.keysym),
+                    "{} y {}",
+                    a.name,
+                    b.name
+                );
+            }
+        }
+        // Ningún atajo ocupa una combinación reservada.
+        for b in BINDINGS {
+            assert!(
+                !RESERVED.contains(&(b.modifiers, b.keysym)),
+                "{} está reservado",
+                b.name
+            );
+        }
+        let exit: Vec<_> = BINDINGS
+            .iter()
+            .filter(|b| b.action == Action::Exit)
+            .collect();
+        assert_eq!(exit.len(), 1);
+        assert_eq!(
+            (exit[0].modifiers, exit[0].keysym),
+            (MOD4 | SHIFT, XK_ESCAPE)
+        );
     }
 }
