@@ -1,0 +1,37 @@
+# Artefactos de compilación
+/target/
+# Cargo.lock no se ignora: se versiona deliberadamente (ADR 0001).
+# Copias de seguridad de rustfmt
+*.rs.bk
+
+# Registros y temporales
+*.log
+*.swp
+*~
+
+# Volcados de memoria de un fallo durante las pruebas (solo en la raíz,
+# para no ocultar un futuro módulo o directorio llamado «core»)
+/core
+/core.[0-9]*
+
+# Perfiles y cobertura
+perf.data*
+*.profraw
+
+# Configuración local privada y posibles credenciales
+.env
+.env.*
+/local/
+*Xauthority*
+*.pem
+*.key
+id_rsa*
+id_ecdsa*
+id_ed25519*
+
+# Configuración local de editores
+.idea/
+.vscode/
+
+# Estado local de herramientas (nunca debe versionarse), en cualquier nivel
+.claude/

@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="1786" viewBox="0 0 400 1786" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F1: flujo implementado</title>
+  <desc id="desc">Diagrama técnico basado en el código fuente; no es una captura
+    ni una prueba de ejecución. El display :0 se rechaza siempre, lo que protege
+    la sesión principal solo mientras esta use :0. En un entorno de prueba con
+    Xvfb, preparado por el arnés, el proceso crimson-wm comprueba en orden los
+    argumentos, DISPLAY, el token, la conexión por socket Unix con cookie, la
+    marca de sandbox, la ausencia de otro gestor y SubstructureRedirect; después
+    captura el atajo provisional y atiende los eventos. Cada paso indica sus
+    códigos de salida. Aparte se muestra una selección de funciones pendientes.
+    Las salvaguardas reducen accidentes, pero no son una frontera de
+    seguridad.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif; font-size: 14px; fill: #1F2328; }
+      .h { font-size: 16px; font-weight: 700; }
+      .b { font-weight: 700; }
+      .muted { fill: #57606A; }
+      .accent { fill: #B3132B; }
+      .code { font-weight: 700; fill: #B3132B; text-anchor: end; }
+      .box { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .proc { fill: #F6F8FA; stroke: #1F2328; stroke-width: 1.5; }
+      .reject { fill: #FFFFFF; stroke: #B3132B; stroke-width: 2; }
+      .boundary { fill: none; stroke: #B3132B; stroke-width: 2; stroke-dasharray: 8 5; }
+      .pending { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 4 4; }
+      .sep { stroke: #D0D7DE; stroke-width: 1; }
+      .flow { stroke: #1F2328; stroke-width: 1.5; }
+    </style>
+    <marker id="arrow-end" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#1F2328"/>
+    </marker>
+    <marker id="arrow-start" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M10 0L0 5L10 10z" fill="#1F2328"/>
+    </marker>
+  </defs>
+
+  <rect width="400" height="1786" fill="#FFFFFF"/>
+
+  <text class="h" x="20" y="30">Crimson WM · fase F1</text>
+  <text class="muted" x="20" y="52">Diagrama técnico del código actual;</text>
+  <text class="muted" x="20" y="72">no es una captura ni prueba de ejecución.</text>
+
+  <!-- Display :0: fuera del entorno de prueba -->
+  <g>
+    <rect class="reject" x="8" y="88" width="384" height="100" rx="6"/>
+    <text class="h accent" x="20" y="112">Display :0 (sesión principal)</text>
+    <text x="20" y="134">Se rechaza siempre en la capa 1, antes</text>
+    <text x="20" y="154">de conectar (código 10). Solo protege la</text>
+    <text x="20" y="174">sesión mientras esta siga usando :0.</text>
+  </g>
+
+  <!-- Entorno de prueba -->
+  <g>
+    <rect class="boundary" x="8" y="204" width="384" height="1274" rx="8"/>
+    <text class="h accent" x="20" y="228">Entorno de prueba (Xvfb)</text>
+  </g>
+
+  <g>
+    <rect class="box" x="20" y="242" width="360" height="40" rx="4"/>
+    <text class="h" x="32" y="268">Clientes X11 (p. ej. xmessage)</text>
+  </g>
+
+  <line class="flow" x1="52" y1="282" x2="52" y2="314" marker-end="url(#arrow-end)"/>
+  <text class="muted" x="68" y="303">piden mapear y configurar ventanas</text>
+
+  <g>
+    <rect class="box" x="20" y="316" width="360" height="100" rx="4"/>
+    <text class="h" x="32" y="340">Servidor Xvfb :N (N ≠ 0)</text>
+    <text x="32" y="362">El arnés lo lanza con xvfb-run (cookie</text>
+    <text x="32" y="382">temporal, -nolisten tcp, sin -ac) y</text>
+    <text x="32" y="402">pone la marca _CRIMSON_SANDBOX.</text>
+  </g>
+
+  <line class="flow" x1="52" y1="420" x2="52" y2="472" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)"/>
+  <text class="muted" x="68" y="441">conexión: socket Unix y cookie (paso 4)</text>
+  <text class="muted" x="68" y="461">eventos: peticiones redirigidas y atajo</text>
+
+  <!-- Proceso crimson-wm -->
+  <g>
+    <rect class="proc" x="20" y="476" width="360" height="986" rx="4"/>
+    <text class="h" x="32" y="500">Proceso crimson-wm</text>
+
+    <text class="h" x="32" y="528">1 · Argumentos</text>
+    <text class="code" x="368" y="528">0 · 2</text>
+    <text class="muted" x="32" y="550">--help o --version: 0</text>
+    <text class="muted" x="32" y="570">Desconocido o más de uno: 2</text>
+    <line class="sep" x1="32" y1="584" x2="368" y2="584"/>
+
+    <text class="h" x="32" y="608">2 · Capa 1: DISPLAY</text>
+    <text class="code" x="368" y="608">10 · 11</text>
+    <text class="muted" x="32" y="630">Se lee una sola vez. Ausente o vacío: 11</text>
+    <text class="muted" x="32" y="650">Admite displays locales con número ≠ 0.</text>
+    <text class="muted" x="32" y="670">Rechaza :0, TCP, hosts, rutas y valores</text>
+    <text class="muted" x="32" y="690">malformados o no Unicode: 10</text>
+    <line class="sep" x1="32" y1="704" x2="368" y2="704"/>
+
+    <text class="h" x="32" y="728">3 · Capa 2: token</text>
+    <text class="code" x="368" y="728">10</text>
+    <text class="muted" x="32" y="750">CRIMSON_SANDBOX_TOKEN ausente,</text>
+    <text class="muted" x="32" y="770">vacío o no Unicode: 10</text>
+    <line class="sep" x1="32" y1="784" x2="368" y2="784"/>
+
+    <text class="h" x="32" y="808">4 · Conexión con cookie</text>
+    <text class="code" x="368" y="808">11 · 14</text>
+    <text class="muted" x="32" y="830">Solo socket Unix local, sin TCP.</text>
+    <text class="muted" x="32" y="850">Presenta la cookie MIT-MAGIC-COOKIE-1;</text>
+    <text class="muted" x="32" y="870">el servidor X decide si la acepta.</text>
+    <text class="muted" x="32" y="890">No autentica al servidor ni cifra.</text>
+    <text class="muted" x="32" y="910">Sin socket, sin cookie o rechazo: 11</text>
+    <text class="muted" x="32" y="930">Pantalla inexistente: 14</text>
+    <line class="sep" x1="32" y1="944" x2="368" y2="944"/>
+
+    <text class="h" x="32" y="968">5 · Capa 2: marca de sandbox</text>
+    <text class="code" x="368" y="968">10</text>
+    <text class="muted" x="32" y="990">_CRIMSON_SANDBOX ausente o distinta</text>
+    <text class="muted" x="32" y="1010">del token: 10</text>
+    <line class="sep" x1="32" y1="1024" x2="368" y2="1024"/>
+
+    <text class="h" x="32" y="1048">6 · Capa 3: otro gestor</text>
+    <text class="code" x="368" y="1048">12</text>
+    <text class="muted" x="32" y="1070">Propiedad _NET_SUPPORTING_WM_CHECK</text>
+    <text class="muted" x="32" y="1090">en la raíz: 12</text>
+    <line class="sep" x1="32" y1="1104" x2="368" y2="1104"/>
+
+    <text class="h" x="32" y="1128">7 · Capa 4: redirección</text>
+    <text class="code" x="368" y="1128">12</text>
+    <text class="muted" x="32" y="1150">Pide SubstructureRedirect en la raíz.</text>
+    <text class="muted" x="32" y="1170">BadAccess (otro cliente ya la tiene): 12</text>
+    <line class="sep" x1="32" y1="1184" x2="368" y2="1184"/>
+
+    <text class="h" x="32" y="1208">8 · Atajo de salida (provisional)</text>
+    <text class="code" x="368" y="1208">14</text>
+    <text class="muted" x="32" y="1230">Captura Mod4+Shift+Escape en la raíz.</text>
+    <text class="muted" x="32" y="1250">Sin tecla Escape o captura rechazada: 14</text>
+    <line class="sep" x1="32" y1="1264" x2="368" y2="1264"/>
+
+    <text class="h" x="32" y="1288">9 · Bucle de eventos</text>
+    <text class="code" x="368" y="1288">0</text>
+    <text class="muted" x="32" y="1310">MapRequest: mapea la ventana</text>
+    <text class="muted" x="32" y="1330">ConfigureRequest: aplica lo solicitado</text>
+    <text class="muted" x="32" y="1350">Mod4+Shift+Escape: termina con 0</text>
+    <text class="muted" x="32" y="1370">Error X: se registra y se ignora</text>
+    <text class="muted" x="32" y="1390">Otros eventos: se ignoran</text>
+    <line class="sep" x1="32" y1="1404" x2="368" y2="1404"/>
+
+    <text class="b" x="32" y="1428">Pasos 5 a 9: conexión perdida, 13.</text>
+    <text class="b" x="32" y="1448">Pasos 5 a 8: error X inesperado, 14.</text>
+  </g>
+
+  <!-- Pendiente -->
+  <g>
+    <rect class="pending" x="8" y="1494" width="384" height="204" rx="6"/>
+    <text class="h muted" x="20" y="1518">Pendiente (selección)</text>
+    <text class="muted" x="20" y="1540">No es la hoja de ruta completa; fases</text>
+    <text class="muted" x="20" y="1560">y detalle en los ADR 0002 y 0003.</text>
+    <text class="muted" x="20" y="1584">– Pruebas también con Xephyr</text>
+    <text class="muted" x="20" y="1604">– Gestión limpia de señales</text>
+    <text class="muted" x="20" y="1624">– Quitar el token del entorno de los</text>
+    <text class="muted" x="34" y="1644">procesos que lance el WM</text>
+    <text class="muted" x="20" y="1664">– _NET_SUPPORTING_WM_CHECK propio</text>
+    <text class="muted" x="20" y="1684">– Extensiones RandR y XKB</text>
+  </g>
+
+  <text class="b accent" x="20" y="1726">Las salvaguardas reducen accidentes;</text>
+  <text class="b accent" x="20" y="1746">no son una frontera de seguridad</text>
+  <text class="b accent" x="20" y="1766">(ADR 0003).</text>
+</svg>
