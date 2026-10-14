@@ -13,6 +13,12 @@
   F6, F7 y F8 evaluaban su condición una sola vez; ahora la vuelven a
   evaluar en cada intento (ver «Esperas que no se volvían a evaluar
   (F8-B.2)»).
+- **Actualización F9 (2026-10-14):** el centrado se decide con
+  `Class::centers`: diálogos, utilidades, barras de herramientas y
+  transitorias sin tipo. Los menús, tooltips y demás emergentes gestionadas
+  conservan su posición aunque sean transitorias. Una ventana fija nunca es
+  propietaria efectiva: un diálogo de un `DOCK` no se centra ni cambia de
+  escritorio (ADR 0011).
 
 ![Captura real en Xvfb: dos ventanas en master-stack; un diálogo de la izquierda, centrado sobre ella y enfocado; y la principal a pantalla completa con su diálogo encima](../images/crimson-wm-f8-comparison.png)
 

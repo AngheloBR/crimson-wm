@@ -1,5 +1,6 @@
 //! Escritorios virtuales (ADR 0007): ocho conjuntos independientes de
-//! ventanas, cada uno con su propio orden master-stack e historial de foco.
+//! ventanas, cada uno con su propio orden master-stack e historial de foco,
+//! y la colección de ventanas fijas, que no pertenecen a ninguno (ADR 0011).
 //! Sin E/S: `wm.rs` muestra, oculta y enfoca las ventanas según lo que
 //! decide este módulo.
 //!
@@ -8,7 +9,7 @@
 
 use x11rb::protocol::xproto::Window;
 
-use crate::clients::{Class, Client, Clients, Kind, Removed, Restore};
+use crate::clients::{Class, Client, Clients, Kind, Layer, Removed, Restore};
 
 /// Número fijo de escritorios.
 pub const COUNT: usize = 8;
@@ -47,8 +48,20 @@ pub struct Entered {
     pub displaced: Option<(Window, Restore)>,
 }
 
+/// Ventana fija (ADR 0011): `DESKTOP`, `DOCK` o `NOTIFICATION`. Está en
+/// todos los escritorios, nunca se oculta, no recibe el foco del WM ni entra
+/// en el mosaico, y su capa decide su sitio en la pila.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fixed {
+    pub window: Window,
+    pub layer: Layer,
+    /// Orden de gestión, compartido con `Client::order`.
+    pub order: u64,
+}
+
 /// Invariantes:
-/// - cada ventana gestionada está en un único escritorio;
+/// - cada ventana gestionada está en un único escritorio o en la colección
+///   de fijas, nunca en dos sitios;
 /// - `current` es menor que `COUNT`;
 /// - `previous`, si existe, es distinto de `current`;
 /// - el historial de cada escritorio solo contiene ventanas de ese
@@ -57,6 +70,8 @@ pub struct Entered {
 #[derive(Debug, Default)]
 pub struct Workspaces {
     desks: [Clients; COUNT],
+    /// Ventanas fijas, en orden de gestión.
+    fixed: Vec<Fixed>,
     current: usize,
     previous: Option<usize>,
     /// Siguiente número de orden de gestión (`Client::order`).
@@ -131,9 +146,10 @@ impl Workspaces {
     }
 
     /// Gestiona la ventana en el escritorio activo. Devuelve `false`, sin
-    /// cambiar nada, si ya estaba gestionada en cualquier escritorio.
+    /// cambiar nada, si ya estaba gestionada en cualquier escritorio o es
+    /// fija.
     pub fn manage(&mut self, window: Window, class: Class) -> bool {
-        if self.locate(window).is_some() || !self.current_mut().manage(window, class) {
+        if self.is_managed(window) || !self.current_mut().manage(window, class) {
             return false;
         }
         let order = self.next_order;
@@ -144,14 +160,57 @@ impl Workspaces {
         true
     }
 
-    /// Todas las ventanas gestionadas, de todos los escritorios, en el orden
-    /// en que empezaron a gestionarse (`_NET_CLIENT_LIST`).
+    /// Gestiona una ventana fija (ADR 0011). Devuelve `false`, sin cambiar
+    /// nada, si ya estaba gestionada, en un escritorio o como fija.
+    pub fn manage_fixed(&mut self, window: Window, layer: Layer) -> bool {
+        if self.is_managed(window) {
+            return false;
+        }
+        let order = self.next_order;
+        self.next_order += 1;
+        self.fixed.push(Fixed {
+            window,
+            layer,
+            order,
+        });
+        true
+    }
+
+    /// La ventana fija, si lo es.
+    pub fn fixed(&self, window: Window) -> Option<Fixed> {
+        self.fixed.iter().copied().find(|f| f.window == window)
+    }
+
+    /// Ventanas fijas de una capa, en orden de gestión: la última queda
+    /// encima de las anteriores.
+    pub fn fixed_in(&self, layer: Layer) -> Vec<Window> {
+        self.fixed
+            .iter()
+            .filter(|f| f.layer == layer)
+            .map(|f| f.window)
+            .collect()
+    }
+
+    /// Deja de gestionar una ventana fija. `None` si no lo era.
+    pub fn unmanage_fixed(&mut self, window: Window) -> Option<Fixed> {
+        let index = self.fixed.iter().position(|f| f.window == window)?;
+        Some(self.fixed.remove(index))
+    }
+
+    /// La ventana está gestionada: en un escritorio o como fija.
+    pub fn is_managed(&self, window: Window) -> bool {
+        self.locate(window).is_some() || self.fixed(window).is_some()
+    }
+
+    /// Todas las ventanas gestionadas, de todos los escritorios y las fijas,
+    /// en el orden en que empezaron a gestionarse (`_NET_CLIENT_LIST`).
     pub fn client_list(&self) -> Vec<Window> {
         let mut all: Vec<(u64, Window)> = self
             .desks
             .iter()
             .flat_map(|d| d.windows().filter_map(|w| d.get(w)))
             .map(|c| (c.order, c.window))
+            .chain(self.fixed.iter().map(|f| (f.order, f.window)))
             .collect();
         all.sort_unstable();
         all.into_iter().map(|(_, w)| w).collect()
@@ -386,7 +445,27 @@ impl Workspaces {
             assert!(self.owner_of(current).is_none(), "ciclo efectivo desde {w}");
         }
         let total: usize = self.desks.iter().map(|d| d.windows().count()).sum();
-        assert_eq!(list.len(), total, "_NET_CLIENT_LIST incompleta");
+        assert_eq!(
+            list.len(),
+            total + self.fixed.len(),
+            "_NET_CLIENT_LIST incompleta"
+        );
+        for f in &self.fixed {
+            assert_eq!(
+                self.locate(f.window),
+                None,
+                "fija {} en un escritorio",
+                f.window
+            );
+            assert!(self.get(f.window).is_none());
+            assert_eq!(
+                self.fixed.iter().filter(|o| o.window == f.window).count(),
+                1,
+                "fija repetida {}",
+                f.window
+            );
+            assert!(self.owner_of(f.window).is_none());
+        }
         for (i, w) in list.iter().enumerate() {
             assert!(!list[i + 1..].contains(w), "_NET_CLIENT_LIST repetida");
         }
@@ -414,17 +493,22 @@ mod tests {
     const TILED: Class = Class {
         kind: Kind::Tiled,
         focusable: true,
+        fullscreen: true,
+        centers: false,
         input: InputModel::Passive,
         delete_window: false,
         transient_for: None,
     };
     const FLOATING: Class = Class {
         kind: Kind::Floating,
+        centers: true,
         ..TILED
     };
     const PANEL: Class = Class {
         kind: Kind::Floating,
         focusable: false,
+        fullscreen: false,
+        centers: false,
         input: InputModel::Passive,
         delete_window: false,
         transient_for: None,
@@ -890,6 +974,66 @@ mod tests {
         ws.assert_consistent();
     }
 
+    // U21: ventanas fijas (ADR 0011).
+
+    #[test]
+    fn ventanas_fijas_fuera_de_los_escritorios() {
+        let mut ws = Workspaces::default();
+        ws.manage(1, TILED);
+        assert!(ws.manage_fixed(2, Layer::Above));
+        assert!(ws.manage_fixed(3, Layer::Below));
+        ws.switch(4);
+        assert!(ws.manage_fixed(4, Layer::Above));
+        ws.manage(5, FLOATING);
+        // No se duplican, ni entre fijas ni con los escritorios.
+        assert!(!ws.manage_fixed(2, Layer::Below));
+        assert!(!ws.manage_fixed(1, Layer::Above));
+        assert!(!ws.manage(2, TILED));
+        assert_eq!(ws.fixed(2).map(|f| f.layer), Some(Layer::Above));
+        // Sin escritorio: nada de lo que actúa sobre los escritorios las ve.
+        for w in [2, 3, 4] {
+            assert!(ws.is_managed(w));
+            assert_eq!(ws.locate(w), None);
+            assert!(ws.get(w).is_none());
+            assert!(ws.move_window(w, 1, true).is_none());
+            assert!(ws.move_family(w, 1, true).is_empty());
+            assert!(ws.enter_fullscreen(w, Restore { frame: None }).is_none());
+            assert!(!ws.current_mut().focus(w), "sin foco");
+        }
+        assert_eq!(ws.current().windows().collect::<Vec<_>>(), vec![5]);
+        assert_eq!(ws.desk(0).unwrap().windows().collect::<Vec<_>>(), vec![1]);
+        // Capas en orden de gestión; en _NET_CLIENT_LIST, junto a las demás.
+        assert_eq!(ws.fixed_in(Layer::Above), vec![2, 4]);
+        assert_eq!(ws.fixed_in(Layer::Below), vec![3]);
+        assert_eq!(ws.client_list(), vec![1, 2, 3, 4, 5]);
+        // Cambiar de escritorio no las toca.
+        ws.switch(0);
+        assert_eq!(ws.fixed_in(Layer::Above), vec![2, 4]);
+        ws.assert_consistent();
+        // Retirarlas: una sola vez; las ajenas no cuentan.
+        assert_eq!(ws.unmanage_fixed(2).map(|f| f.window), Some(2));
+        assert_eq!(ws.unmanage_fixed(2), None);
+        assert_eq!(ws.unmanage_fixed(1), None, "no es fija");
+        assert_eq!(ws.unmanage(3), None, "una fija no está en un escritorio");
+        assert_eq!(ws.client_list(), vec![1, 3, 4, 5]);
+        // Retirada, puede volver como ventana de escritorio, al final.
+        assert!(ws.manage(2, TILED));
+        assert_eq!(ws.client_list(), vec![1, 3, 4, 5, 2]);
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn una_fija_no_es_propietaria_ni_dependiente() {
+        let mut ws = Workspaces::default();
+        ws.manage_fixed(1, Layer::Above);
+        ws.manage(2, transient(1));
+        assert_eq!(ws.owner_of(2), None, "una fija no es propietaria");
+        assert_eq!(ws.dependents(1), Vec::<Window>::new());
+        assert_eq!(ws.focus_return(Some(1), 0), None);
+        assert_eq!(ws.floating_stack(0), vec![2]);
+        ws.assert_consistent();
+    }
+
     /// Secuencia larga de operaciones pseudoaleatorias (generador
     /// congruencial con semilla fija): los invariantes se mantienen siempre.
     #[test]
@@ -909,7 +1053,7 @@ mod tests {
             match next(9) {
                 0 | 1 => {
                     let class = classes[usize::try_from(next(3)).unwrap()];
-                    let was_managed = ws.locate(window).is_some();
+                    let was_managed = ws.is_managed(window);
                     assert_eq!(ws.manage(window, class), !was_managed);
                 }
                 2 => {
@@ -961,6 +1105,17 @@ mod tests {
                         }
                     } else {
                         ws.leave_fullscreen(window);
+                    }
+                }
+                8 if next(5) == 0 => {
+                    // Ventanas fijas (ADR 0011).
+                    if next(2) == 0 {
+                        let layer = [Layer::Above, Layer::Below][usize::try_from(next(2)).unwrap()];
+                        let was_managed = ws.is_managed(window);
+                        assert_eq!(ws.manage_fixed(window, layer), !was_managed);
+                    } else {
+                        let was = ws.fixed(window);
+                        assert_eq!(ws.unmanage_fixed(window), was);
                     }
                 }
                 8 if next(2) == 0 => {

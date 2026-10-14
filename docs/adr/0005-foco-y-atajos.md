@@ -27,6 +27,10 @@
   foco vuelve a su propietario efectivo si sigue en el mismo escritorio y
   admite foco; si no, al historial, como antes. Un diálogo que se gestiona
   oculto en otro escritorio no recibe el foco (ADR 0010).
+- **Actualización F9 (2026-10-14):** las ventanas fijas (`DOCK`,
+  `NOTIFICATION` y `DESKTOP`) nunca reciben el foco del WM, no entran en el
+  historial ni en `Mod4+j`/`Mod4+k`, y `_NET_ACTIVE_WINDOW` sobre ellas se
+  rechaza. Los tipos que admiten foco no cambian (ADR 0011).
 
 ## Contexto
 

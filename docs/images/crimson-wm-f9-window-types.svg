@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1500" viewBox="0 0 1400 1500" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F9: tipos de ventana EWMH, ventanas fijas y capas</title>
+  <desc id="desc">Diagrama técnico basado en el código de F9 (ADR 0011); no es una
+    captura. Muestra el flujo de clasificación de una ventana (override-redirect,
+    primer tipo reconocido de _NET_WM_WINDOW_TYPE y WM_TRANSIENT_FOR) con sus
+    tres resultados (sin gestionar, ventana de escritorio y ventana fija); la
+    tabla de los catorce tipos con su gestión, foco, pantalla completa,
+    centrado, declaración en _NET_SUPPORTED y escritorios; las cinco capas de
+    apilamiento y su relación con la pantalla completa; las ventanas fijas en
+    dos escritorios, y lo que queda aplazado.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif; font-size: 14px; fill: #1F2328; }
+      .title { font-size: 26px; font-weight: 700; }
+      .h { font-size: 17px; font-weight: 700; }
+      .h2 { font-size: 15px; font-weight: 700; }
+      .muted { fill: #57606A; }
+      .accent { fill: #8B0A1F; }
+      .small { font-size: 13px; }
+      .label { font-size: 13px; fill: #57606A; }
+      .mono { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 13px; }
+      .monob { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 13px; font-weight: 700; }
+      .nlabel { font-size: 15px; font-weight: 700; }
+      .light { fill: #FFFFFF; }
+      .frame { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .deferred { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 6 5; }
+      .n-red { fill: #8B0A1F; stroke: #1F2328; stroke-width: 1.2; }
+      .n-dark { fill: #1F2328; stroke: #1F2328; stroke-width: 1.2; }
+      .n-gray { fill: #6E7781; stroke: #1F2328; stroke-width: 1.2; }
+      .n-light { fill: #D0D7DE; stroke: #1F2328; stroke-width: 1.2; }
+      .n-white { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.2; }
+      .n-soft { fill: #F6F8FA; stroke: #1F2328; stroke-width: 1.2; }
+      .n-bad { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 5 4; }
+      .row { fill: #F6F8FA; }
+      .flow { stroke: #1F2328; stroke-width: 1.8; fill: none; }
+      .flow-bad { stroke: #8C959F; stroke-width: 1.6; stroke-dasharray: 5 4; fill: none; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#1F2328"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#8C959F"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="1500" fill="#FFFFFF"/>
+  <text class="title" x="30" y="46">Crimson WM · F9: tipos de ventana EWMH, ventanas fijas y capas</text>
+  <text class="muted" x="30" y="74">Diagrama técnico del código de F9 (ADR 0011). No es una captura: la captura real está en crimson-wm-f9-comparison.png.</text>
+
+  <!-- 1. Clasificación -->
+  <rect class="frame" x="30" y="92" width="1340" height="276" rx="8"/>
+  <text class="h" x="48" y="122">1 · Clasificación: clients::classify, la única fuente de la política</text>
+  <rect class="n-soft" x="50" y="150" width="190" height="64" rx="6"/>
+  <text class="nlabel" x="145" y="176" text-anchor="middle">MapRequest</text>
+  <text class="small" x="145" y="198" text-anchor="middle">o adopción al arrancar</text>
+  <line class="flow" x1="240" y1="182" x2="282" y2="182" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="284" y="150" width="200" height="64" rx="6"/>
+  <text class="nlabel" x="384" y="176" text-anchor="middle">¿override-redirect?</text>
+  <text class="small" x="384" y="198" text-anchor="middle">GetWindowAttributes</text>
+  <line class="flow-bad" x1="384" y1="214" x2="384" y2="264" marker-end="url(#arrow-gray)"/>
+  <text class="label" x="394" y="246">sí</text>
+  <rect class="n-bad" x="284" y="266" width="200" height="86" rx="6"/>
+  <text class="nlabel" x="384" y="292" text-anchor="middle">Unmanaged</text>
+  <text class="small" x="384" y="314" text-anchor="middle">no pasa por el WM; nunca</text>
+  <text class="small" x="384" y="334" text-anchor="middle">se gestiona ni se reordena</text>
+  <line class="flow" x1="484" y1="182" x2="526" y2="182" marker-end="url(#arrow)"/>
+  <text class="label" x="494" y="172">no</text>
+  <rect class="n-white" x="528" y="140" width="330" height="96" rx="6"/>
+  <text class="nlabel" x="693" y="164" text-anchor="middle">_NET_WM_WINDOW_TYPE</text>
+  <text class="small" x="693" y="186" text-anchor="middle">tipo ATOM, formato 32, hasta 16 átomos;</text>
+  <text class="small" x="693" y="206" text-anchor="middle">cuenta el primero reconocido (TypeAtoms).</text>
+  <text class="small" x="693" y="226" text-anchor="middle">Desconocidos y 0 se saltan.</text>
+  <rect class="n-white" x="528" y="260" width="330" height="98" rx="6"/>
+  <text class="nlabel" x="693" y="283" text-anchor="middle">Sin tipo reconocido</text>
+  <text class="small" x="693" y="304" text-anchor="middle">(ausente, mal formada o desconocida):</text>
+  <text class="small" x="693" y="324" text-anchor="middle">con WM_TRANSIENT_FOR, como DIALOG;</text>
+  <text class="small" x="693" y="344" text-anchor="middle">sin ella, como NORMAL</text>
+  <line class="flow" x1="693" y1="236" x2="693" y2="258" marker-end="url(#arrow)"/>
+  <line class="flow" x1="858" y1="170" x2="918" y2="158" marker-end="url(#arrow)"/>
+  <line class="flow" x1="858" y1="190" x2="918" y2="230" marker-end="url(#arrow)"/>
+  <line class="flow" x1="858" y1="300" x2="918" y2="246" marker-end="url(#arrow)"/>
+  <rect class="n-red" x="920" y="134" width="430" height="80" rx="6"/>
+  <text class="nlabel light" x="1135" y="158" text-anchor="middle">Managed(Class) · ventana de escritorio</text>
+  <text class="small light" x="1135" y="180" text-anchor="middle">kind (mosaico o flotante), focusable, fullscreen,</text>
+  <text class="small light" x="1135" y="200" text-anchor="middle">centers: derivados una vez, sin guardar el tipo</text>
+  <rect class="n-dark" x="920" y="226" width="430" height="80" rx="6"/>
+  <text class="nlabel light" x="1135" y="250" text-anchor="middle">Fixed(Layer) · ventana fija</text>
+  <text class="small light" x="1135" y="272" text-anchor="middle">DOCK y NOTIFICATION: Layer::Above</text>
+  <text class="small light" x="1135" y="292" text-anchor="middle">DESKTOP: Layer::Below</text>
+  <text class="label" x="920" y="332">El tipo explícito prevalece sobre WM_TRANSIENT_FOR.</text>
+  <text class="label" x="920" y="352">Un cambio de tipo se ignora hasta volver a mapearla.</text>
+
+  <!-- 2. Tabla de tipos -->
+  <rect class="frame" x="30" y="384" width="1340" height="474" rx="8"/>
+  <text class="h" x="48" y="414">2 · Los 14 tipos de EWMH (_NET_WM_WINDOW_TYPE_…)</text>
+  <text class="h2" x="50" y="446">Tipo</text>
+  <text class="h2" x="330" y="446">Gestión</text>
+  <text class="h2" x="560" y="446">Foco</text>
+  <text class="h2" x="640" y="446">Pantalla completa</text>
+  <text class="h2" x="800" y="446">Centrado</text>
+  <text class="h2" x="990" y="446">_NET_SUPPORTED</text>
+  <text class="h2" x="1150" y="446">Escritorios</text>
+  <line class="flow" x1="48" y1="456" x2="1352" y2="456"/>
+
+  <rect class="row" x="48" y="460" width="1304" height="26"/>
+  <text class="monob" x="50" y="478">NORMAL</text><text class="small" x="330" y="478">mosaico</text><text class="small" x="560" y="478">sí</text><text class="small" x="640" y="478">sí</text><text class="small" x="800" y="478">—</text><text class="small" x="990" y="478">sí</text><text class="small" x="1150" y="478">uno</text>
+  <text class="monob" x="50" y="504">DIALOG</text><text class="small" x="330" y="504">flotante</text><text class="small" x="560" y="504">sí</text><text class="small" x="640" y="504">sí</text><text class="small" x="800" y="504">sobre su propietario</text><text class="small" x="990" y="504">sí</text><text class="small" x="1150" y="504">uno</text>
+  <rect class="row" x="48" y="512" width="1304" height="26"/>
+  <text class="monob" x="50" y="530">UTILITY</text><text class="small" x="330" y="530">flotante</text><text class="small" x="560" y="530">sí</text><text class="small" x="640" y="530">sí</text><text class="small" x="800" y="530">sobre su propietario</text><text class="small" x="990" y="530">sí</text><text class="small" x="1150" y="530">uno</text>
+  <text class="monob" x="50" y="556">TOOLBAR</text><text class="small" x="330" y="556">flotante</text><text class="small" x="560" y="556">sí</text><text class="small" x="640" y="556">sí</text><text class="small" x="800" y="556">sobre su propietario</text><text class="small" x="990" y="556">sí</text><text class="small" x="1150" y="556">uno</text>
+  <rect class="row" x="48" y="564" width="1304" height="26"/>
+  <text class="monob" x="50" y="582">SPLASH</text><text class="small" x="330" y="582">flotante</text><text class="small" x="560" y="582">no</text><text class="small" x="640" y="582">no</text><text class="small" x="800" y="582">no (su posición)</text><text class="small" x="990" y="582">sí</text><text class="small" x="1150" y="582">uno</text>
+  <text class="monob" x="50" y="608">MENU</text><text class="small" x="330" y="608">flotante</text><text class="small" x="560" y="608">no</text><text class="small" x="640" y="608">no</text><text class="small" x="800" y="608">no (su posición)</text><text class="small" x="990" y="608">sí</text><text class="small" x="1150" y="608">uno</text>
+  <rect class="row" x="48" y="616" width="1304" height="26"/>
+  <text class="monob" x="50" y="634">DROPDOWN_MENU *</text><text class="small" x="330" y="634">flotante</text><text class="small" x="560" y="634">no</text><text class="small" x="640" y="634">no</text><text class="small" x="800" y="634">no (su posición)</text><text class="small muted" x="990" y="634">no</text><text class="small" x="1150" y="634">uno</text>
+  <text class="monob" x="50" y="660">POPUP_MENU *</text><text class="small" x="330" y="660">flotante</text><text class="small" x="560" y="660">no</text><text class="small" x="640" y="660">no</text><text class="small" x="800" y="660">no (su posición)</text><text class="small muted" x="990" y="660">no</text><text class="small" x="1150" y="660">uno</text>
+  <rect class="row" x="48" y="668" width="1304" height="26"/>
+  <text class="monob" x="50" y="686">TOOLTIP *</text><text class="small" x="330" y="686">flotante</text><text class="small" x="560" y="686">no</text><text class="small" x="640" y="686">no</text><text class="small" x="800" y="686">no (su posición)</text><text class="small muted" x="990" y="686">no</text><text class="small" x="1150" y="686">uno</text>
+  <text class="monob" x="50" y="712">COMBO *</text><text class="small" x="330" y="712">flotante</text><text class="small" x="560" y="712">no</text><text class="small" x="640" y="712">no</text><text class="small" x="800" y="712">no (su posición)</text><text class="small muted" x="990" y="712">no</text><text class="small" x="1150" y="712">uno</text>
+  <rect class="row" x="48" y="720" width="1304" height="26"/>
+  <text class="monob" x="50" y="738">DND *</text><text class="small" x="330" y="738">flotante</text><text class="small" x="560" y="738">no</text><text class="small" x="640" y="738">no</text><text class="small" x="800" y="738">no (su posición)</text><text class="small muted" x="990" y="738">no</text><text class="small" x="1150" y="738">uno</text>
+  <text class="monob accent" x="50" y="764">NOTIFICATION</text><text class="small accent" x="330" y="764">fija, capa superior</text><text class="small" x="560" y="764">no</text><text class="small" x="640" y="764">no</text><text class="small" x="800" y="764">no</text><text class="small" x="990" y="764">sí</text><text class="small accent" x="1150" y="764">todos (0xFFFFFFFF)</text>
+  <rect class="row" x="48" y="772" width="1304" height="26"/>
+  <text class="monob accent" x="50" y="790">DOCK</text><text class="small accent" x="330" y="790">fija, capa superior</text><text class="small" x="560" y="790">no</text><text class="small" x="640" y="790">no</text><text class="small" x="800" y="790">no</text><text class="small" x="990" y="790">sí</text><text class="small accent" x="1150" y="790">todos (0xFFFFFFFF)</text>
+  <text class="monob accent" x="50" y="816">DESKTOP</text><text class="small accent" x="330" y="816">fija, capa inferior</text><text class="small" x="560" y="816">no</text><text class="small" x="640" y="816">no</text><text class="small" x="800" y="816">no</text><text class="small" x="990" y="816">sí</text><text class="small accent" x="1150" y="816">todos (0xFFFFFFFF)</text>
+  <text class="label" x="50" y="846">* EWMH los describe para ventanas override-redirect, que nunca llegan al WM. Si una se gestiona, conserva su posición, sin foco ni pantalla completa; no se declaran.</text>
+
+  <!-- 3. Capas -->
+  <rect class="frame" x="30" y="874" width="1340" height="330" rx="8"/>
+  <text class="h" x="48" y="904">3 · Capas de apilamiento (apply_layers) y pantalla completa</text>
+  <rect class="n-red" x="60" y="922" width="560" height="44" rx="5"/>
+  <text class="nlabel light" x="76" y="950">5 · pantalla completa enfocada y sus diálogos (F8)</text>
+  <rect class="n-dark" x="60" y="974" width="560" height="44" rx="5"/>
+  <text class="nlabel light" x="76" y="1002">4 · DOCK y NOTIFICATION (fijas superiores)</text>
+  <rect class="n-light" x="60" y="1026" width="560" height="44" rx="5"/>
+  <text class="nlabel" x="76" y="1054">3 · flotantes, en la pila jerárquica de F8</text>
+  <rect class="n-white" x="60" y="1078" width="560" height="44" rx="5"/>
+  <text class="nlabel" x="76" y="1106">2 · mosaico (nunca se reordena)</text>
+  <rect class="n-gray" x="60" y="1130" width="560" height="44" rx="5"/>
+  <text class="nlabel light" x="76" y="1158">1 · DESKTOP (fijas inferiores)</text>
+  <text class="label" x="640" y="950">arriba</text>
+  <text class="label" x="640" y="1158">abajo</text>
+  <line class="flow" x1="660" y1="1146" x2="660" y2="962" marker-end="url(#arrow)"/>
+  <text class="h2" x="700" y="936">Pantalla completa (solo si Class::fullscreen)</text>
+  <text class="small" x="700" y="960">· Con el foco (ella o un diálogo suyo): capa 5, por encima del DOCK.</text>
+  <text class="small" x="700" y="982">· Sin el foco: baja al fondo, pero justo encima de las DESKTOP.</text>
+  <text class="small" x="700" y="1004">· NORMAL, DIALOG, UTILITY, TOOLBAR y sin tipo la admiten; los demás</text>
+  <text class="small" x="700" y="1026">  tipos y las fijas, no: se rechaza y se retira FULLSCREEN de _NET_WM_STATE.</text>
+  <text class="h2" x="700" y="1064">Peticiones de apilamiento (ConfigureRequest)</text>
+  <text class="small" x="700" y="1088">· Fija: se concede la geometría; stack_mode y sibling se ignoran. Sin</text>
+  <text class="small" x="700" y="1110">  nada que conceder, ConfigureNotify sintético con la geometría real.</text>
+  <text class="small" x="700" y="1132">· Flotante: se concede (capas 2 y 3) y apply_layers rehace 1, 4 y 5.</text>
+  <text class="small" x="700" y="1154">· Override-redirect: el WM no la toca; una subida suya puede taparla.</text>
+  <text class="label" x="700" y="1186">_NET_CLIENT_LIST_STACKING sale de QueryTree: el orden real del servidor.</text>
+
+  <!-- 4. Escritorios -->
+  <rect class="frame" x="30" y="1220" width="860" height="262" rx="8"/>
+  <text class="h" x="48" y="1250">4 · Ventanas fijas y escritorios</text>
+  <text class="h2" x="60" y="1278">Escritorio 1</text>
+  <rect class="n-gray" x="60" y="1288" width="250" height="140"/>
+  <rect class="n-red" x="60" y="1288" width="125" height="140"/>
+  <rect class="n-dark" x="185" y="1288" width="125" height="140"/>
+  <rect class="n-soft" x="60" y="1288" width="250" height="16"/>
+  <text class="small light" x="70" y="1370">A</text>
+  <text class="small light" x="195" y="1370">B</text>
+  <text class="label" x="200" y="1300">DOCK</text>
+  <text class="h2" x="340" y="1278">Escritorio 2</text>
+  <rect class="n-dark" x="340" y="1288" width="250" height="140"/>
+  <rect class="n-light" x="510" y="1345" width="60" height="40"/>
+  <rect class="n-soft" x="340" y="1288" width="250" height="16"/>
+  <text class="small light" x="350" y="1370">C</text>
+  <text class="small" x="516" y="1370">menú</text>
+  <text class="label" x="480" y="1300">DOCK</text>
+  <text class="label" x="60" y="1450">A y B se ocultan; el DOCK y el DESKTOP (gris, al fondo) siguen visibles.</text>
+  <text class="label" x="60" y="1470">El menú (POPUP_MENU gestionado) conserva su posición.</text>
+  <text class="small" x="610" y="1296">· _NET_WM_DESKTOP = 0xFFFFFFFF y</text>
+  <text class="small" x="610" y="1316">  WM_STATE Normal; en el save-set.</text>
+  <text class="small" x="610" y="1340">· Sin foco del WM ni Mod4+j/k.</text>
+  <text class="small" x="610" y="1364">· Nunca se ocultan ni se mueven.</text>
+  <text class="small" x="610" y="1388">· En _NET_CLIENT_LIST(_STACKING).</text>
+  <text class="small" x="610" y="1412">· Peticiones EWMH sobre ellas</text>
+  <text class="small" x="610" y="1432">  (activar, escritorio, cerrar,</text>
+  <text class="small" x="610" y="1452">  pantalla completa): rechazadas.</text>
+
+  <!-- 5. Aplazado -->
+  <rect class="deferred" x="910" y="1220" width="460" height="262" rx="8"/>
+  <text class="h muted" x="928" y="1250">5 · Aplazado (no implementado)</text>
+  <text class="small muted" x="928" y="1278">· El DOCK no reserva espacio: sin _NET_WM_STRUT,</text>
+  <text class="small muted" x="928" y="1298">  _NET_WM_STRUT_PARTIAL ni _NET_WORKAREA.</text>
+  <text class="small muted" x="928" y="1322">· Sin ventanas sticky generales.</text>
+  <text class="small muted" x="928" y="1346">· Sin _NET_WM_STATE_ABOVE ni _BELOW.</text>
+  <text class="small muted" x="928" y="1370">· Sin reclasificación dinámica completa.</text>
+  <text class="small muted" x="928" y="1394">· Sin reglas por aplicación ni multimonitor.</text>
+  <text class="small muted" x="928" y="1418">· Sin Crimson Panel: el núcleo solo conoce</text>
+  <text class="small muted" x="928" y="1438">  tipos EWMH, nunca nombres ni WM_CLASS.</text>
+</svg>

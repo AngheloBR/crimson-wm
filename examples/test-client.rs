@@ -1,5 +1,5 @@
-//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F8 (ADR 0007 a
-//! 0010). Genera lo que las herramientas instaladas no pueden: el
+//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F9 (ADR 0007 a
+//! 0011). Genera lo que las herramientas instaladas no pueden: el
 //! `UnmapNotify` sintético de ICCCM §4.1.4, mensajes EWMH arbitrarios, la
 //! propiedad de una selección y una ventana que registra los mensajes
 //! `WM_PROTOCOLS` que recibe. No forma parte del WM: solo lo ejecutan los
@@ -28,7 +28,11 @@
 //!   `--position-hint us|p`, `WM_NORMAL_HINTS` con `USPosition` o
 //!   `PPosition`; `--background RRGGBB`, el color de fondo (visual
 //!   TrueColor de 24 bits, como el de Xvfb), y `--map-delay MS` espera
-//!   antes de mapearla.
+//!   antes de mapearla. Desde F9: `--type TIPO`, repetible, añade un tipo a
+//!   `_NET_WM_WINDOW_TYPE`, en el orden dado (`DOCK` equivale a
+//!   `_NET_WM_WINDOW_TYPE_DOCK`; un nombre que empieza por `_` se usa tal
+//!   cual); `--dialog` equivale a `--type DIALOG`, y `--override-redirect`
+//!   crea la ventana override-redirect (el WM no la gestiona).
 //!
 //! Solo se conecta a un DISPLAY de la forma `:N` con N distinto de 0.
 
@@ -203,7 +207,8 @@ fn client_window(
     let mut pair = false;
     let mut seconds = 60;
     let mut states: Vec<String> = Vec::new();
-    let mut dialog = false;
+    let mut types: Vec<String> = Vec::new();
+    let mut override_redirect = false;
     let mut geometry: (i16, i16, u16, u16) = (0, 0, 200, 100);
     let mut border: u16 = 0;
     let mut transient_for: Option<String> = None;
@@ -222,7 +227,16 @@ fn client_window(
             "--seconds" => seconds = next("N")?.parse()?,
             "--fullscreen" => states.push("_NET_WM_STATE_FULLSCREEN".into()),
             "--state" => states.push(next("ÁTOMO")?),
-            "--dialog" => dialog = true,
+            "--dialog" => types.push("_NET_WM_WINDOW_TYPE_DIALOG".into()),
+            "--type" => {
+                let name = next("TIPO")?;
+                types.push(if name.starts_with('_') {
+                    name
+                } else {
+                    format!("_NET_WM_WINDOW_TYPE_{name}")
+                });
+            }
+            "--override-redirect" => override_redirect = true,
             "--geometry" => {
                 geometry = (
                     next("X")?.parse()?,
@@ -251,7 +265,10 @@ fn client_window(
         .collect::<Res<Vec<_>>>()?;
     let net_wm_state = atom(conn, "_NET_WM_STATE")?;
     let window_type = atom(conn, "_NET_WM_WINDOW_TYPE")?;
-    let dialog_type = atom(conn, "_NET_WM_WINDOW_TYPE_DIALOG")?;
+    let type_atoms = types
+        .iter()
+        .map(|name| atom(conn, name))
+        .collect::<Res<Vec<_>>>()?;
     let wm_protocols = atom(conn, "WM_PROTOCOLS")?;
     let wm_delete = atom(conn, "WM_DELETE_WINDOW")?;
     let wm_take_focus = atom(conn, "WM_TAKE_FOCUS")?;
@@ -284,6 +301,7 @@ fn client_window(
             visual,
             &CreateWindowAux::new()
                 .background_pixel(background.unwrap_or(conn.setup().roots[screen].white_pixel))
+                .override_redirect(u32::from(override_redirect))
                 .event_mask(EventMask::STRUCTURE_NOTIFY),
         )?;
         conn.change_property8(
@@ -309,13 +327,13 @@ fn client_window(
                 &state_atoms,
             )?;
         }
-        if dialog {
+        if !type_atoms.is_empty() {
             conn.change_property32(
                 PropMode::REPLACE,
                 window,
                 window_type,
                 AtomEnum::ATOM,
-                &[dialog_type],
+                &type_atoms,
             )?;
         }
         if let Some(owner) = &transient_for {

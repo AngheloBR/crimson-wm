@@ -3,32 +3,38 @@
 Gestor de ventanas para X11, escrito en Rust y dirigido inicialmente a
 Debian 13 (Trixie), orientado a la gestión de ventanas en mosaico. Por ahora
 es un prototipo con un único diseño, master-stack, ocho escritorios
-virtuales, pantalla completa, diálogos que siguen a su ventana principal y
+virtuales, pantalla completa, diálogos que siguen a su ventana principal,
+tipos de ventana EWMH con paneles y fondos fijos en todos los escritorios y
 compatibilidad parcial con ICCCM y EWMH (ver «Estado»).
 
 ## Estado
 
-Fase F8: diálogos y ventanas transitorias (`WM_TRANSIENT_FOR`), sobre la
+Fase F9: tipos de ventana EWMH (`_NET_WM_WINDOW_TYPE`), ventanas fijas y
+capas de apilamiento, sobre los diálogos y ventanas transitorias, la
 pantalla completa, la compatibilidad ICCCM/EWMH, los escritorios virtuales,
 el lanzamiento de aplicaciones, el foco por teclado y el mosaico
 master-stack. **Todavía no es un gestor de ventanas utilizable:** solo
 arranca en un servidor X de prueba que supere las salvaguardas del ADR
 0003, coloca las ventanas normales en mosaico, deja flotantes los diálogos
-y los mantiene con su ventana principal, gestiona el foco con el teclado,
+y los mantiene con su ventana principal, deja paneles, avisos y fondos
+fijos en su capa y en todos los escritorios, gestiona el foco con el teclado,
 reparte las ventanas en ocho escritorios, pone una ventana a pantalla
 completa, cierra ventanas, lanza seis programas fijos y termina con el
 atajo provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones,
-paneles, varios monitores ni configuración.
+panel propio, espacio reservado para paneles (struts), varios monitores ni
+configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
 (2026-10-11). Últimos resultados registrados, todos del 2026-10-14 en Xvfb
-sobre el binario de depuración de F8 (detalles y limitaciones en los ADR
-0003 a 0010):
+sobre el binario de depuración de F9 (detalles y limitaciones en los ADR
+0003 a 0011):
 
-- Pruebas unitarias U1–U20 (120 pruebas de `cargo test`): pasaron.
-- Aceptación de F8: A76–A86 pasaron y **A87 quedó parcial**, porque la
+- Pruebas unitarias U1–U21 (126 pruebas de `cargo test`): pasaron.
+- Aceptación de F9: A88–A102 pasaron y **A103 quedó parcial**, porque la
   consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
   programas falsos, nunca las aplicaciones reales.
+- Regresión de F8: A76–A86 pasaron y **A87 quedó parcial** por el mismo
+  motivo.
 - Regresión de F7: A63 y A65–A74 pasaron y **A75 quedó parcial** por el
   mismo motivo.
 - Regresión de F6: A53–A62 y el caso A64 pasaron; las comprobaciones de
@@ -183,8 +189,10 @@ Fuente editable: `docs/images/crimson-wm-f6-icccm-ewmh.svg`.*
 - **Lo que se declara:** listas de ventanas (`_NET_CLIENT_LIST` y
   `_NET_CLIENT_LIST_STACKING`), ventana activa, escritorios, cierre y los
   tipos de ventana normal, diálogo, utilidad y barra de herramientas. Nada
-  más: la pantalla completa (F7), los paneles con espacio reservado, las
-  ventanas sticky y otras funciones siguen pendientes.
+  más en F6. Desde F7 se declara la pantalla completa y desde F9 los tipos
+  splash, menú, panel (`DOCK`), escritorio (`DESKTOP`) y aviso (ver «Tipos
+  de ventana»). Los paneles con espacio reservado, las ventanas sticky y
+  otras funciones siguen pendientes.
 - **Peticiones externas:**
   - un paginador puede cambiar de escritorio y enfocar una ventana;
   - una aplicación solo puede enfocar ventanas del escritorio activo;
@@ -266,6 +274,42 @@ Fuente editable: `docs/images/crimson-wm-f8-dialogs.svg`.*
 
 Detalles, casos límite y limitaciones en el ADR 0010.
 
+## Tipos de ventana (F9)
+
+![Captura real en Xvfb: con F8, una ventana DESKTOP tapa el mosaico; con F9, queda al fondo con el DOCK encima; y en el escritorio 2 el DOCK sigue visible y un menú conserva su posición](docs/images/crimson-wm-f9-comparison.png)
+
+*Capturas auténticas en Xvfb aislados de 1280 × 720 (pruebas A101 y A102):
+el primer panel con el binario de F8 (commit 195938d), los otros dos con
+el de F9. Volcados de `xwd -root` sin retoques; los rótulos de foco y pila
+se leyeron del servidor.*
+
+- **Clasificación:** cuenta el primer tipo reconocido de
+  `_NET_WM_WINDOW_TYPE`. Sin tipo reconocido, una ventana transitoria es un
+  diálogo y las demás van al mosaico, como antes.
+- **`DOCK` y `NOTIFICATION`:** ventanas fijas, visibles en todos los
+  escritorios, por encima del mosaico y de las flotantes, sin foco y fuera
+  de `Mod4+j`/`Mod4+k`.
+- **`DESKTOP`:** ventana fija, siempre por debajo del mosaico.
+- **Menús, tooltips y splash gestionados:** flotantes, sin foco y en la
+  posición que piden, aunque sean transitorios.
+- **Pantalla completa:** solo ventanas normales, diálogos, utilidades,
+  barras de herramientas y ventanas sin tipo. Con el foco queda por encima
+  del panel; sin él, por encima del fondo.
+- **Capas**, de abajo arriba: `DESKTOP`, mosaico, flotantes, `DOCK` y
+  `NOTIFICATION`, y la pantalla completa enfocada.
+- **Un cambio de tipo** con la ventana ya visible se ignora hasta que la
+  aplicación la retire y la vuelva a mostrar.
+- **Aún no:** el panel no reserva espacio (sin struts ni `_NET_WORKAREA`),
+  no hay `_NET_WM_STATE_ABOVE`/`BELOW` ni ventanas sticky generales, ni
+  Crimson Panel.
+
+![Diagrama de F9: flujo de clasificación, los 14 tipos, capas de apilamiento y pantalla completa, ventanas fijas en dos escritorios y lo aplazado](docs/images/crimson-wm-f9-window-types.png)
+
+*Diagrama técnico elaborado a partir del código de F9; no es una captura.
+Fuente editable: `docs/images/crimson-wm-f9-window-types.svg`.*
+
+Detalles, casos límite y limitaciones en el ADR 0011.
+
 ## Arranque y eventos
 
 ![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, se identifica (WM_S0 y EWMH), adopta las ventanas visibles, atiende los eventos de mosaico, foco, escritorios y cierre y lanza programas sin shell; :0 se rechaza](docs/images/crimson-wm-overview.svg)
@@ -324,7 +368,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U20)
+### Unitarias (U1–U21)
 
 ```sh
 cargo test --locked
@@ -479,7 +523,7 @@ tests/acceptance/f7/run.sh [BINARIO]
 ### Aceptación de F8 (A76–A87)
 
 ```sh
-cargo build --locked --examples
+cargo build --locked --bins --examples
 tests/acceptance/f8/run.sh [BINARIO]
 ```
 
@@ -500,10 +544,31 @@ tests/acceptance/f8/run.sh [BINARIO]
   directorio nuevo `crimson-f8.XXXXXX` dentro de `$TMPDIR` (o de `/tmp`),
   que el arnés no borra.
 
+### Aceptación de F9 (A88–A103)
+
+```sh
+cargo build --locked --bins --examples
+tests/acceptance/f9/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas, código de salida, aislamiento y
+  programas falsos que el arnés de F8.
+- `test-client` también crea ventanas con cualquier lista de tipos
+  (`--type`, repetible y en orden) y override-redirect
+  (`--override-redirect`).
+- A101 usa el binario de F8 que indique `CRIMSON_F8_BIN`, compilado a
+  partir de `git archive 195938d` en un directorio temporal, sin worktree
+  ni red. Sin esa variable, A101 y la composición de A102 quedan OMITIDAS.
+- A102 hace las capturas de F9 y compone y valida la comparación. La imagen
+  del repositorio procede de esa prueba.
+- A103 equivale a A9 y queda siempre parcial.
+- Los resultados se guardan en un directorio nuevo `crimson-f9.XXXXXX`
+  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+
 ### Imágenes de los diagramas
 
 ```sh
-tools/render-svg.py docs/images/crimson-wm-f8-dialogs.svg docs/images/crimson-wm-f8-dialogs.png --scale 2
+tools/render-svg.py docs/images/crimson-wm-f9-window-types.svg docs/images/crimson-wm-f9-window-types.png --scale 2
 ```
 
 Renderiza un SVG a PNG con las bibliotecas del sistema (librsvg y cairo),
@@ -552,6 +617,8 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
 - `docs/adr/0009-pantalla-completa.md`: pantalla completa de F7.
 - `docs/adr/0010-dialogos-transitorios.md`: diálogos y ventanas
   transitorias de F8.
+- `docs/adr/0011-tipos-de-ventana-ewmh.md`: tipos de ventana EWMH, ventanas
+  fijas y capas de apilamiento de F9.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior

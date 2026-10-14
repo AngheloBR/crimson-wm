@@ -1,7 +1,7 @@
-//! EWMH (ADR 0008 y 0009): lista exacta de lo que el WM declara en
-//! `_NET_SUPPORTED`, decodificación y validación de las peticiones de los
-//! clientes (`ClientMessage`), orden de `_NET_CLIENT_LIST_STACKING` y valor
-//! de `_NET_WM_STATE`. Sin E/S.
+//! EWMH (ADR 0008, 0009 y 0011): lista exacta de lo que el WM declara en
+//! `_NET_SUPPORTED`, tipos de ventana (`_NET_WM_WINDOW_TYPE`), decodificación
+//! y validación de las peticiones de los clientes (`ClientMessage`), orden de
+//! `_NET_CLIENT_LIST_STACKING` y valor de `_NET_WM_STATE`. Sin E/S.
 
 use x11rb::protocol::xproto::{Atom, Timestamp, Window};
 
@@ -14,10 +14,13 @@ pub const WM_NAME: &str = "Crimson WM";
 /// incluye:
 /// - `_NET_WM_NAME`: el WM la pone en su ventana de comprobación, pero no lee
 ///   la de los clientes;
-/// - los tipos de ventana sin un tratamiento propio (paneles, escritorio,
-///   avisos, menús…), que solo quedan flotantes;
+/// - los tipos de ventana que EWMH describe para ventanas override-redirect
+///   (`DROPDOWN_MENU`, `POPUP_MENU`, `TOOLTIP`, `COMBO` y `DND`): el WM los
+///   reconoce para no centrarlos, enfocarlos ni ponerlos a pantalla
+///   completa si alguno llega a gestionarse, pero no tiene un tratamiento
+///   que anunciar (ADR 0011);
 /// - los estados de `_NET_WM_STATE` distintos de la pantalla completa
-///   (maximizar, sticky, etc.), `_NET_WORKAREA` y los struts,
+///   (maximizar, sticky, above, below, etc.), `_NET_WORKAREA` y los struts,
 ///   `_NET_FRAME_EXTENTS`, etc.
 pub const SUPPORTED: &[&str] = &[
     "_NET_SUPPORTED",
@@ -36,10 +39,100 @@ pub const SUPPORTED: &[&str] = &[
     "_NET_WM_WINDOW_TYPE_DIALOG",
     "_NET_WM_WINDOW_TYPE_UTILITY",
     "_NET_WM_WINDOW_TYPE_TOOLBAR",
+    "_NET_WM_WINDOW_TYPE_SPLASH",
+    "_NET_WM_WINDOW_TYPE_MENU",
+    "_NET_WM_WINDOW_TYPE_DOCK",
+    "_NET_WM_WINDOW_TYPE_DESKTOP",
+    "_NET_WM_WINDOW_TYPE_NOTIFICATION",
 ];
 
-/// Valor de `_NET_WM_DESKTOP` que pide estar en todos los escritorios.
+/// Valor de `_NET_WM_DESKTOP` que pide estar en todos los escritorios. El
+/// WM solo lo publica en las ventanas fijas (ADR 0011); como petición de un
+/// cliente se rechaza.
 pub const STICKY: u32 = 0xFFFF_FFFF;
+
+/// Tipos de ventana de EWMH (`_NET_WM_WINDOW_TYPE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowType {
+    Normal,
+    Dialog,
+    Utility,
+    Toolbar,
+    Splash,
+    Menu,
+    DropdownMenu,
+    PopupMenu,
+    Tooltip,
+    Notification,
+    Dock,
+    Desktop,
+    Combo,
+    Dnd,
+}
+
+impl WindowType {
+    /// Los 14 tipos, en el orden de `NAMES`.
+    pub const ALL: [WindowType; 14] = [
+        WindowType::Normal,
+        WindowType::Dialog,
+        WindowType::Utility,
+        WindowType::Toolbar,
+        WindowType::Splash,
+        WindowType::Menu,
+        WindowType::DropdownMenu,
+        WindowType::PopupMenu,
+        WindowType::Tooltip,
+        WindowType::Notification,
+        WindowType::Dock,
+        WindowType::Desktop,
+        WindowType::Combo,
+        WindowType::Dnd,
+    ];
+
+    /// Nombres de los átomos, en el orden de `ALL`.
+    pub const NAMES: [&'static str; 14] = [
+        "_NET_WM_WINDOW_TYPE_NORMAL",
+        "_NET_WM_WINDOW_TYPE_DIALOG",
+        "_NET_WM_WINDOW_TYPE_UTILITY",
+        "_NET_WM_WINDOW_TYPE_TOOLBAR",
+        "_NET_WM_WINDOW_TYPE_SPLASH",
+        "_NET_WM_WINDOW_TYPE_MENU",
+        "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+        "_NET_WM_WINDOW_TYPE_POPUP_MENU",
+        "_NET_WM_WINDOW_TYPE_TOOLTIP",
+        "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+        "_NET_WM_WINDOW_TYPE_DOCK",
+        "_NET_WM_WINDOW_TYPE_DESKTOP",
+        "_NET_WM_WINDOW_TYPE_COMBO",
+        "_NET_WM_WINDOW_TYPE_DND",
+    ];
+}
+
+/// Átomos de los 14 tipos en este servidor, en el orden de
+/// `WindowType::ALL`. Es la única tabla que traduce átomos a tipos.
+#[derive(Clone, Copy, Debug)]
+pub struct TypeAtoms([Atom; 14]);
+
+impl TypeAtoms {
+    /// Con los átomos de `WindowType::NAMES`, en su orden.
+    pub fn new(atoms: [Atom; 14]) -> Self {
+        TypeAtoms(atoms)
+    }
+
+    /// Tipo de una ventana según los valores de `_NET_WM_WINDOW_TYPE`: el
+    /// primero que se reconoce, porque la lista va en orden de preferencia
+    /// (EWMH). Los desconocidos (también 0) se saltan; `None` si no se
+    /// reconoce ninguno o la lista está vacía (propiedad ausente o mal
+    /// formada).
+    pub fn window_type(&self, values: &[Atom]) -> Option<WindowType> {
+        values.iter().find_map(|&value| {
+            self.0
+                .iter()
+                .position(|&atom| atom == value && atom != 0)
+                .map(|i| WindowType::ALL[i])
+        })
+    }
+}
 
 /// Tipos de los mensajes que el WM atiende.
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +227,20 @@ pub enum Request {
         action: StateAction,
         source: Source,
     },
+}
+
+impl Request {
+    /// La ventana a la que se refiere la petición; `None` para el cambio de
+    /// escritorio activo.
+    pub fn window(&self) -> Option<Window> {
+        match *self {
+            Request::Activate { window, .. }
+            | Request::WindowDesktop { window, .. }
+            | Request::Close { window, .. }
+            | Request::Fullscreen { window, .. } => Some(window),
+            Request::CurrentDesktop { .. } => None,
+        }
+    }
 }
 
 /// Motivo por el que se rechaza una petición.
@@ -356,7 +463,7 @@ mod tests {
 
     #[test]
     fn lista_soportada_exacta() {
-        assert_eq!(SUPPORTED.len(), 16);
+        assert_eq!(SUPPORTED.len(), 21);
         assert!(SUPPORTED.contains(&"_NET_WM_STATE"));
         assert!(SUPPORTED.contains(&"_NET_WM_STATE_FULLSCREEN"));
         for (i, name) in SUPPORTED.iter().enumerate() {
@@ -369,13 +476,13 @@ mod tests {
             "_NET_WM_STATE_MAXIMIZED_HORZ",
             "_NET_WM_STATE_STICKY",
             "_NET_WM_STATE_ABOVE",
+            "_NET_WM_STATE_BELOW",
             "_NET_FRAME_EXTENTS",
             "_NET_WORKAREA",
             "_NET_WM_STRUT",
             "_NET_WM_STRUT_PARTIAL",
             "_NET_WM_NAME",
             "_NET_DESKTOP_NAMES",
-            "_NET_WM_WINDOW_TYPE_DOCK",
             "_NET_WM_PING",
         ] {
             assert!(
@@ -383,6 +490,125 @@ mod tests {
                 "{deferred} no está implementada"
             );
         }
+        // U21: tipos declarados (ADR 0011): los que EWMH describe para
+        // ventanas gestionadas, más NOTIFICATION, que tiene tratamiento
+        // propio. Los de ventanas override-redirect se reconocen sin
+        // declararse.
+        let declared: Vec<&str> = SUPPORTED
+            .iter()
+            .copied()
+            .filter(|n| n.starts_with("_NET_WM_WINDOW_TYPE_"))
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                "_NET_WM_WINDOW_TYPE_NORMAL",
+                "_NET_WM_WINDOW_TYPE_DIALOG",
+                "_NET_WM_WINDOW_TYPE_UTILITY",
+                "_NET_WM_WINDOW_TYPE_TOOLBAR",
+                "_NET_WM_WINDOW_TYPE_SPLASH",
+                "_NET_WM_WINDOW_TYPE_MENU",
+                "_NET_WM_WINDOW_TYPE_DOCK",
+                "_NET_WM_WINDOW_TYPE_DESKTOP",
+                "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+            ]
+        );
+        for name in declared {
+            assert!(WindowType::NAMES.contains(&name), "{name} sin tipo");
+        }
+    }
+
+    // U21: _NET_WM_WINDOW_TYPE.
+
+    /// Átomos ficticios: 300 + índice de `WindowType::ALL`.
+    fn type_atoms() -> TypeAtoms {
+        let mut atoms = [0; 14];
+        for (i, atom) in (300..).zip(atoms.iter_mut()) {
+            *atom = i;
+        }
+        TypeAtoms::new(atoms)
+    }
+
+    fn atom_of(t: WindowType) -> Atom {
+        let i = WindowType::ALL.iter().position(|&x| x == t).unwrap();
+        300 + Atom::try_from(i).unwrap()
+    }
+
+    #[test]
+    fn los_14_tipos() {
+        let atoms = type_atoms();
+        for (t, name) in WindowType::ALL.iter().zip(WindowType::NAMES) {
+            assert_eq!(atoms.window_type(&[atom_of(*t)]), Some(*t), "{name}");
+            let suffix = format!("{t:?}").to_uppercase();
+            assert_eq!(
+                name.trim_start_matches("_NET_WM_WINDOW_TYPE_")
+                    .replace('_', ""),
+                suffix,
+                "nombre y tipo en el mismo orden"
+            );
+        }
+        for (i, name) in WindowType::NAMES.iter().enumerate() {
+            assert!(
+                !WindowType::NAMES[i + 1..].contains(name),
+                "repetido: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn el_primer_tipo_reconocido_gana() {
+        let atoms = type_atoms();
+        let (normal, dialog, dock) = (
+            atom_of(WindowType::Normal),
+            atom_of(WindowType::Dialog),
+            atom_of(WindowType::Dock),
+        );
+        assert_eq!(
+            atoms.window_type(&[normal, dialog]),
+            Some(WindowType::Normal)
+        );
+        assert_eq!(
+            atoms.window_type(&[dialog, normal]),
+            Some(WindowType::Dialog)
+        );
+        // Desconocidos y 0 se saltan.
+        assert_eq!(atoms.window_type(&[999, 0, dock]), Some(WindowType::Dock));
+        assert_eq!(atoms.window_type(&[dock, dock]), Some(WindowType::Dock));
+        // Ausente, vacía o sin ninguno reconocido.
+        assert_eq!(atoms.window_type(&[]), None);
+        assert_eq!(atoms.window_type(&[999, 0, 1]), None);
+        // Un átomo 0 en la tabla nunca coincide con un valor 0.
+        let mut with_zero = [0; 14];
+        with_zero[1] = 5;
+        assert_eq!(
+            TypeAtoms::new(with_zero).window_type(&[0, 5]),
+            Some(WindowType::Dialog)
+        );
+    }
+
+    #[test]
+    fn ventana_de_cada_peticion() {
+        let requests = [
+            Request::Activate {
+                window: W,
+                source: Source::Pager,
+            },
+            Request::WindowDesktop { window: W, desk: 1 },
+            Request::Close {
+                window: W,
+                time: 0,
+                source: Source::Pager,
+            },
+            Request::Fullscreen {
+                window: W,
+                action: StateAction::Add,
+                source: Source::Application,
+            },
+        ];
+        for request in requests {
+            assert_eq!(request.window(), Some(W), "{request:?}");
+        }
+        assert_eq!(Request::CurrentDesktop { desk: 2 }.window(), None);
     }
 
     #[test]

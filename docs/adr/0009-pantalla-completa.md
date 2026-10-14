@@ -12,6 +12,12 @@
   familia: si el foco lo tiene un diálogo de la ventana a pantalla
   completa, esta sigue arriba con sus diálogos encima, y solo baja al
   fondo cuando se enfoca una ventana ajena (ADR 0010).
+- **Actualización F9 (2026-10-14):** solo admiten la pantalla completa
+  los tipos con `Class::fullscreen` (`NORMAL`, `DIALOG`, `UTILITY`,
+  `TOOLBAR` y sin tipo); en los demás y en las fijas se rechaza, también el
+  estado inicial, y FULLSCREEN se retira de `_NET_WM_STATE`. La enfocada
+  queda por encima del `DOCK`; sin foco, baja al fondo pero por encima de
+  las `DESKTOP` (ADR 0011).
 
 ![Captura real en Xvfb: tres ventanas xlogo en master-stack; la segunda a pantalla completa con Mod4+f; y de nuevo la disposición original, idéntica píxel a píxel](../images/crimson-wm-f7-comparison.png)
 

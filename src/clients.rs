@@ -1,9 +1,10 @@
-//! Ventanas gestionadas, su clasificación (ADR 0004) y el foco (ADR 0005).
-//! Sin E/S: `wm.rs` lee las propiedades del servidor y aplica las
+//! Ventanas gestionadas, su clasificación (ADR 0004 y 0011) y el foco (ADR
+//! 0005). Sin E/S: `wm.rs` lee las propiedades del servidor y aplica las
 //! decisiones.
 
-use x11rb::protocol::xproto::{Atom, Window};
+use x11rb::protocol::xproto::Window;
 
+use crate::ewmh::WindowType;
 use crate::icccm::Protocols;
 use crate::layout::{self, Rect};
 
@@ -60,6 +61,11 @@ pub struct Class {
     pub kind: Kind,
     /// Puede recibir el foco y entra en la navegación por teclado.
     pub focusable: bool,
+    /// Puede ponerse a pantalla completa (ADR 0011).
+    pub fullscreen: bool,
+    /// Al gestionarse, se centra sobre su propietario efectivo si no pide
+    /// posición (ADR 0010 y 0011). Solo se usa en ese momento.
+    pub centers: bool,
     pub input: InputModel,
     /// Anuncia `WM_DELETE_WINDOW`: admite el cierre cooperativo (ADR 0008).
     pub delete_window: bool,
@@ -73,6 +79,10 @@ pub struct Client {
     pub window: Window,
     pub kind: Kind,
     pub focusable: bool,
+    /// Admite la pantalla completa (`Class::fullscreen`). Como `kind` y
+    /// `focusable`, se fija al gestionarla y no cambia mientras siga
+    /// gestionada (ADR 0011).
+    pub fullscreen_allowed: bool,
     /// Modelo de entrada y soporte de `WM_DELETE_WINDOW`: se actualizan si
     /// cambian `WM_HINTS` o `WM_PROTOCOLS` (`PropertyNotify`, ADR 0008).
     pub input: InputModel,
@@ -197,6 +207,7 @@ impl Clients {
             window,
             kind: class.kind,
             focusable: class.focusable,
+            fullscreen_allowed: class.fullscreen,
             input: class.input,
             delete_window: class.delete_window,
             geometry: None,
@@ -415,8 +426,10 @@ pub struct WindowInfo {
     pub transient: bool,
     /// Propietario declarado válido de `WM_TRANSIENT_FOR` (ADR 0010).
     pub owner: Option<Window>,
-    /// Valores de `_NET_WM_WINDOW_TYPE`, en orden de preferencia.
-    pub types: Vec<Atom>,
+    /// Primer tipo reconocido de `_NET_WM_WINDOW_TYPE` (ADR 0011). `None`
+    /// si la propiedad falta, está mal formada o no tiene ningún tipo
+    /// conocido.
+    pub window_type: Option<WindowType>,
     /// Campo `input` de `WM_HINTS`, si está presente.
     pub input: Option<bool>,
     /// Protocolos de `WM_PROTOCOLS` que usa el WM.
@@ -426,46 +439,72 @@ pub struct WindowInfo {
     pub fullscreen: bool,
 }
 
-/// Átomos de `_NET_WM_WINDOW_TYPE` que reconoce la clasificación.
-pub struct WindowTypes<'a> {
-    pub normal: Atom,
-    /// Flotantes que reciben el foco (diálogos, utilidades, barras de
-    /// herramientas).
-    pub floating: &'a [Atom],
-    /// Flotantes que nunca reciben el foco (paneles, escritorio, avisos,
-    /// menús…).
-    pub unfocusable: &'a [Atom],
+/// Capa de una ventana fija (ADR 0011).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layer {
+    /// Por debajo de todas las demás (`DESKTOP`).
+    Below,
+    /// Por encima del mosaico y de las flotantes, y por debajo de la
+    /// pantalla completa enfocada (`DOCK` y `NOTIFICATION`).
+    Above,
 }
 
-/// Decide cómo se gestiona una ventana. `None`: no se gestiona
-/// (override-redirect).
+/// Qué hace el WM con una ventana que se mapea (ADR 0011).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disposition {
+    /// Override-redirect: no pasa por el WM.
+    Unmanaged,
+    /// Ventana de un escritorio: mosaico o flotante.
+    Managed(Class),
+    /// Ventana fija: en todos los escritorios, en su capa, sin foco ni
+    /// mosaico.
+    Fixed(Layer),
+}
+
+/// Decide cómo se gestiona una ventana. Es la única fuente de la
+/// clasificación y de las políticas que se derivan de ella (ADR 0004, 0010
+/// y 0011).
 ///
 /// Según EWMH, cuenta el primer tipo reconocido de `_NET_WM_WINDOW_TYPE`;
 /// sin ninguno reconocido, una ventana con `WM_TRANSIENT_FOR` se trata como
-/// un diálogo y las demás como normales.
-pub fn classify(info: &WindowInfo, types: &WindowTypes) -> Option<Class> {
+/// un diálogo y las demás como normales. El tipo explícito prevalece sobre
+/// `WM_TRANSIENT_FOR`.
+pub fn classify(info: &WindowInfo) -> Disposition {
     if info.override_redirect {
-        return None;
+        return Disposition::Unmanaged;
     }
-    let declared = info.types.iter().find_map(|&t| {
-        if t == types.normal {
-            Some((Kind::Tiled, true))
-        } else if types.floating.contains(&t) {
-            Some((Kind::Floating, true))
-        } else if types.unfocusable.contains(&t) {
-            Some((Kind::Floating, false))
-        } else {
-            None
+    // (tipo de gestión, foco, pantalla completa, centrado sobre el
+    // propietario). Hoy la pantalla completa coincide con el foco y el
+    // centrado con las flotantes con foco, pero son capacidades distintas.
+    let (kind, focusable, fullscreen, centers) = match info.window_type {
+        Some(WindowType::Dock | WindowType::Notification) => {
+            return Disposition::Fixed(Layer::Above);
         }
-    });
-    let (kind, focusable) = declared.unwrap_or(if info.transient {
-        (Kind::Floating, true)
-    } else {
-        (Kind::Tiled, true)
-    });
-    Some(Class {
+        Some(WindowType::Desktop) => return Disposition::Fixed(Layer::Below),
+        Some(WindowType::Normal) => (Kind::Tiled, true, true, false),
+        Some(WindowType::Dialog | WindowType::Utility | WindowType::Toolbar) => {
+            (Kind::Floating, true, true, true)
+        }
+        // Splash, menús desprendidos y, si llegan a gestionarse, las
+        // ventanas emergentes que EWMH describe como override-redirect:
+        // conservan su posición, sin foco ni pantalla completa.
+        Some(
+            WindowType::Splash
+            | WindowType::Menu
+            | WindowType::DropdownMenu
+            | WindowType::PopupMenu
+            | WindowType::Tooltip
+            | WindowType::Combo
+            | WindowType::Dnd,
+        ) => (Kind::Floating, false, false, false),
+        None if info.transient => (Kind::Floating, true, true, true),
+        None => (Kind::Tiled, true, true, false),
+    };
+    Disposition::Managed(Class {
         kind,
         focusable,
+        fullscreen,
+        centers,
         input: InputModel::new(info.input, info.protocols.take_focus),
         delete_window: info.protocols.delete_window,
         transient_for: info.owner,
@@ -476,30 +515,25 @@ pub fn classify(info: &WindowInfo, types: &WindowTypes) -> Option<Class> {
 mod tests {
     use super::*;
 
-    const NORMAL: Atom = 100;
-    const DIALOG: Atom = 101;
-    const DOCK: Atom = 102;
-    const UNKNOWN: Atom = 200;
-    const TYPES: WindowTypes = WindowTypes {
-        normal: NORMAL,
-        floating: &[DIALOG],
-        unfocusable: &[DOCK],
-    };
-
     const TILED: Class = Class {
         kind: Kind::Tiled,
         focusable: true,
+        fullscreen: true,
+        centers: false,
         input: InputModel::Passive,
         delete_window: false,
         transient_for: None,
     };
     const FLOATING: Class = Class {
         kind: Kind::Floating,
+        centers: true,
         ..TILED
     };
     const PANEL: Class = Class {
         kind: Kind::Floating,
         focusable: false,
+        fullscreen: false,
+        centers: false,
         input: InputModel::Passive,
         delete_window: false,
         transient_for: None,
@@ -813,46 +847,97 @@ mod tests {
         assert!(!InputModel::NoInput.sets_input_focus() && !InputModel::NoInput.takes_focus());
     }
 
-    fn info(override_redirect: bool, transient: bool, types: &[Atom]) -> WindowInfo {
+    fn info(
+        override_redirect: bool,
+        transient: bool,
+        window_type: Option<WindowType>,
+    ) -> WindowInfo {
         WindowInfo {
             override_redirect,
             transient,
-            types: types.to_vec(),
+            window_type,
             ..WindowInfo::default()
+        }
+    }
+
+    fn managed(disposition: Disposition) -> Class {
+        match disposition {
+            Disposition::Managed(class) => class,
+            other => panic!("no es una ventana de escritorio: {other:?}"),
         }
     }
 
     #[test]
     fn clasificacion() {
-        let casos = [
-            (info(false, false, &[]), Some(TILED)),
-            (info(false, false, &[NORMAL]), Some(TILED)),
-            (info(false, false, &[DIALOG]), Some(FLOATING)),
-            (info(false, false, &[DOCK]), Some(PANEL)),
-            (info(false, true, &[]), Some(FLOATING)),
-            // El tipo explícito prevalece sobre WM_TRANSIENT_FOR.
-            (info(false, true, &[NORMAL]), Some(TILED)),
-            // Cuenta el primer tipo reconocido.
-            (
-                info(false, false, &[UNKNOWN, DIALOG, NORMAL]),
-                Some(FLOATING),
-            ),
-            (info(false, false, &[NORMAL, DIALOG]), Some(TILED)),
-            (info(false, false, &[UNKNOWN]), Some(TILED)),
-            (info(false, true, &[UNKNOWN]), Some(FLOATING)),
-            (info(true, false, &[NORMAL]), None),
-        ];
-        for (info, esperado) in casos {
-            assert_eq!(classify(&info, &TYPES), esperado, "{info:?}");
+        use Disposition::{Fixed, Managed, Unmanaged};
+        // Sin tipo reconocido (propiedad ausente, mal formada o con tipos
+        // desconocidos: ewmh::TypeAtoms da None).
+        assert_eq!(classify(&info(false, false, None)), Managed(TILED));
+        assert_eq!(classify(&info(false, true, None)), Managed(FLOATING));
+        // Override-redirect: nunca se gestiona, tenga el tipo que tenga.
+        for t in [None, Some(WindowType::Normal), Some(WindowType::Dock)] {
+            assert_eq!(classify(&info(true, false, t)), Unmanaged);
+            assert_eq!(classify(&info(true, true, t)), Unmanaged);
         }
+        // U21: los 14 tipos. El tipo explícito prevalece sobre
+        // WM_TRANSIENT_FOR.
+        let popup = Managed(PANEL);
+        for (t, esperado) in [
+            (WindowType::Normal, Managed(TILED)),
+            (WindowType::Dialog, Managed(FLOATING)),
+            (WindowType::Utility, Managed(FLOATING)),
+            (WindowType::Toolbar, Managed(FLOATING)),
+            (WindowType::Splash, popup),
+            (WindowType::Menu, popup),
+            (WindowType::DropdownMenu, popup),
+            (WindowType::PopupMenu, popup),
+            (WindowType::Tooltip, popup),
+            (WindowType::Combo, popup),
+            (WindowType::Dnd, popup),
+            (WindowType::Notification, Fixed(Layer::Above)),
+            (WindowType::Dock, Fixed(Layer::Above)),
+            (WindowType::Desktop, Fixed(Layer::Below)),
+        ] {
+            for transient in [false, true] {
+                assert_eq!(
+                    classify(&info(false, transient, Some(t))),
+                    esperado,
+                    "{t:?}, transitoria: {transient}"
+                );
+            }
+        }
+        assert_eq!(WindowType::ALL.len(), 14);
+    }
+
+    #[test]
+    fn politicas_derivadas() {
+        // Pantalla completa y centrado: capacidades separadas del foco.
+        for t in [WindowType::Splash, WindowType::Menu, WindowType::Tooltip] {
+            let class = managed(classify(&info(false, true, Some(t))));
+            assert!(
+                !class.focusable && !class.fullscreen && !class.centers,
+                "{t:?}"
+            );
+        }
+        let dialog = managed(classify(&info(false, false, Some(WindowType::Dialog))));
+        assert!(dialog.focusable && dialog.fullscreen && dialog.centers);
+        let normal = managed(classify(&info(false, true, Some(WindowType::Normal))));
+        assert!(
+            normal.fullscreen && !normal.centers,
+            "mosaico: no se centra"
+        );
+        // El propietario declarado se conserva en todas las de escritorio.
+        let mut with_owner = info(false, true, Some(WindowType::PopupMenu));
+        with_owner.owner = Some(0x40_0001);
+        assert_eq!(
+            managed(classify(&with_owner)).transient_for,
+            Some(0x40_0001)
+        );
         let no_input = WindowInfo {
             input: Some(false),
             ..WindowInfo::default()
         };
-        assert_eq!(
-            classify(&no_input, &TYPES).map(|c| c.input),
-            Some(InputModel::NoInput)
-        );
+        assert_eq!(managed(classify(&no_input)).input, InputModel::NoInput);
         // WM_PROTOCOLS: modelo de entrada y cierre cooperativo.
         let protocols = WindowInfo {
             protocols: Protocols {
@@ -861,7 +946,7 @@ mod tests {
             },
             ..WindowInfo::default()
         };
-        let class = classify(&protocols, &TYPES).unwrap();
+        let class = managed(classify(&protocols));
         assert_eq!(class.input, InputModel::LocallyActive);
         assert!(class.delete_window);
     }

@@ -15,6 +15,15 @@
   `WM_NORMAL_HINTS` para respetar `USPosition` y `PPosition` (ADR 0010).
   `_NET_SUPPORTED` no cambia. *El «`WM_TRANSIENT_FOR` avanzado» citado como
   aplazado está resuelto, salvo los grupos y `_NET_WM_STATE_MODAL`.*
+- **Actualización F9 (2026-10-14):** `_NET_SUPPORTED` declara además
+  `_NET_WM_WINDOW_TYPE_SPLASH`, `_MENU`, `_DOCK`, `_DESKTOP` y
+  `_NOTIFICATION` (21 átomos), porque ahora tienen un tratamiento propio y
+  probado. *La alternativa descartada «Declarar todos los tipos» sigue
+  descartada:* los cinco tipos de ventanas override-redirect se reconocen
+  sin declararse. Las ventanas fijas llevan `_NET_WM_DESKTOP` =
+  `0xFFFFFFFF` y están en `_NET_CLIENT_LIST(_STACKING)`; las peticiones
+  EWMH sobre ellas se rechazan. Un cambio de `_NET_WM_WINDOW_TYPE` con la
+  ventana gestionada se registra y se ignora (ADR 0011).
 
 ![Diagrama de F6: arranque e identificación, mensajes ICCCM y EWMH entre las aplicaciones, el servidor X11 y Crimson WM, políticas de las peticiones externas, salida y funciones aplazadas](../images/crimson-wm-f6-icccm-ewmh.png)
 

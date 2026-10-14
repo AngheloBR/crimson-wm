@@ -24,6 +24,14 @@
   suben por familias, cada diálogo encima de su principal, y un diálogo
   flotante se centra sobre ella al gestionarse. `arrange` se llama siempre
   antes de mapear una ventana nueva, también las flotantes.
+- **Actualización F9 (2026-10-14):** `clients::classify` devuelve una
+  `Disposition` (ADR 0011). `DOCK`, `NOTIFICATION` y `DESKTOP` ya no son
+  flotantes: son ventanas fijas, fuera del mosaico y de los escritorios, en
+  su capa de la pila (`DESKTOP` por debajo del mosaico). La tabla de
+  clasificación de este ADR sigue valiendo para las demás; el «primer tipo
+  reconocido» lo calcula ahora `ewmh::TypeAtoms`. Desde F9, `arrange`
+  termina con `apply_layers`. *La limitación «Paneles y escritorio» está
+  resuelta en parte: siguen sin struts.*
 
 ## Contexto
 

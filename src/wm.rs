@@ -28,6 +28,12 @@
 //! nace en el escritorio de su principal, centrado sobre ella si no pide
 //! posición, queda encima de ella (`Workspaces::floating_stack`), se mueve
 //! con ella y, al cerrarse, devuelve el foco a ella.
+//!
+//! Tipos de ventana (ADR 0011): `clients::classify` decide, a partir del
+//! primer tipo reconocido de `_NET_WM_WINDOW_TYPE`, si una ventana va a un
+//! escritorio (mosaico o flotante) o es fija (`DESKTOP`, `DOCK` y
+//! `NOTIFICATION`): en todos los escritorios, sin foco y en su capa de la
+//! pila (`apply_layers`).
 
 use std::collections::VecDeque;
 
@@ -45,11 +51,11 @@ use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
 
 use crate::clients::{
-    self, Class, Direction, Frame, InputModel, Kind, Restore, WindowInfo, WindowTypes,
+    self, Class, Direction, Disposition, Frame, InputModel, Kind, Layer, Restore, WindowInfo,
 };
 use crate::display::Target;
 use crate::error::Fatal;
-use crate::ewmh::{self, MessageTypes, Request, Source, StateRead};
+use crate::ewmh::{self, MessageTypes, Request, Source, StateRead, TypeAtoms, WindowType};
 use crate::icccm::{self, ICONIC_STATE, NORMAL_STATE, ProtocolAtoms, Protocols, TransientFor};
 use crate::keys::{self, Action, Repeats};
 use crate::layout::{self, Rect};
@@ -78,20 +84,6 @@ x11rb::atom_manager! {
         _NET_WM_STATE,
         _NET_WM_STATE_FULLSCREEN,
         _NET_WM_WINDOW_TYPE,
-        _NET_WM_WINDOW_TYPE_NORMAL,
-        _NET_WM_WINDOW_TYPE_DIALOG,
-        _NET_WM_WINDOW_TYPE_UTILITY,
-        _NET_WM_WINDOW_TYPE_SPLASH,
-        _NET_WM_WINDOW_TYPE_TOOLBAR,
-        _NET_WM_WINDOW_TYPE_MENU,
-        _NET_WM_WINDOW_TYPE_DOCK,
-        _NET_WM_WINDOW_TYPE_DESKTOP,
-        _NET_WM_WINDOW_TYPE_NOTIFICATION,
-        _NET_WM_WINDOW_TYPE_TOOLTIP,
-        _NET_WM_WINDOW_TYPE_POPUP_MENU,
-        _NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
-        _NET_WM_WINDOW_TYPE_COMBO,
-        _NET_WM_WINDOW_TYPE_DND,
     }
 }
 
@@ -115,6 +107,10 @@ pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(
         .reply()
         .map_err(|e| Fatal::startup("InternAtom", e))?;
     let supported = intern_all(conn, ewmh::SUPPORTED)?;
+    // Los átomos de los 14 tipos salen de `WindowType::NAMES`, la misma
+    // tabla que los traduce (ADR 0011).
+    let types = intern_all(conn, &WindowType::NAMES)?;
+    let types = TypeAtoms::new(std::array::from_fn(|i| types[i]));
     let selection_name = safeguards::manager_selection(target.screen);
     let selection = intern_all(conn, &[selection_name.as_str()])?[0];
 
@@ -127,23 +123,7 @@ pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(
             width: screen.width_in_pixels,
             height: screen.height_in_pixels,
         },
-        floating_types: [
-            atoms._NET_WM_WINDOW_TYPE_DIALOG,
-            atoms._NET_WM_WINDOW_TYPE_UTILITY,
-            atoms._NET_WM_WINDOW_TYPE_TOOLBAR,
-        ],
-        unfocusable_types: [
-            atoms._NET_WM_WINDOW_TYPE_SPLASH,
-            atoms._NET_WM_WINDOW_TYPE_MENU,
-            atoms._NET_WM_WINDOW_TYPE_DOCK,
-            atoms._NET_WM_WINDOW_TYPE_DESKTOP,
-            atoms._NET_WM_WINDOW_TYPE_NOTIFICATION,
-            atoms._NET_WM_WINDOW_TYPE_TOOLTIP,
-            atoms._NET_WM_WINDOW_TYPE_POPUP_MENU,
-            atoms._NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
-            atoms._NET_WM_WINDOW_TYPE_COMBO,
-            atoms._NET_WM_WINDOW_TYPE_DND,
-        ],
+        types,
         atoms,
         workspaces: Workspaces::default(),
         unmaps: OwnUnmaps::default(),
@@ -303,10 +283,8 @@ struct Wm<'c, C: Connection> {
     /// Área del mosaico: la pantalla completa, fija desde el arranque.
     area: Rect,
     atoms: Atoms,
-    /// Tipos flotantes que reciben el foco y tipos flotantes que nunca lo
-    /// reciben.
-    floating_types: [u32; 3],
-    unfocusable_types: [u32; 10],
+    /// Átomos de los tipos de `_NET_WM_WINDOW_TYPE` (ADR 0011).
+    types: TypeAtoms,
     workspaces: Workspaces,
     unmaps: OwnUnmaps,
     /// Número de secuencia de la última petición con la que el WM cambió el
@@ -625,7 +603,7 @@ impl<C: Connection> Wm<'_, C> {
                     return Ok(());
                 }
             };
-            let stacking = ewmh::stacking(&children, |w| self.workspaces.get(w).is_some());
+            let stacking = ewmh::stacking(&children, |w| self.workspaces.is_managed(w));
             self.conn
                 .change_property32(
                     PropMode::REPLACE,
@@ -656,10 +634,14 @@ impl<C: Connection> Wm<'_, C> {
             if map_state != MapState::VIEWABLE {
                 continue;
             }
-            if let Some(class) = clients::classify(&info, &self.window_types()) {
-                self.manage(window, class)?;
-                if info.fullscreen {
-                    fullscreen.push(window);
+            match clients::classify(&info) {
+                Disposition::Unmanaged => {}
+                Disposition::Fixed(layer) => self.manage_fixed(window, layer, info.fullscreen)?,
+                Disposition::Managed(class) => {
+                    self.manage(window, class)?;
+                    if info.fullscreen {
+                        fullscreen.push(window);
+                    }
                 }
             }
         }
@@ -668,6 +650,7 @@ impl<C: Connection> Wm<'_, C> {
         for window in fullscreen {
             self.set_fullscreen(window, true, "adopción", true)?;
         }
+        // También coloca las fijas en su capa (ADR 0011).
         self.arrange()?;
         self.set_focus(self.workspaces.current().fallback(), CURRENT_TIME)
     }
@@ -676,7 +659,8 @@ impl<C: Connection> Wm<'_, C> {
     /// diálogo cuyo propietario efectivo está en otro: va oculto a ese
     /// escritorio, sin cambiar el activo ni el foco (ADR 0010). Una ventana
     /// gestionada de otro escritorio sigue oculta: ni se cambia de escritorio
-    /// ni se le da el foco (ADR 0007).
+    /// ni se le da el foco (ADR 0007). Una fija se coloca en su capa antes
+    /// de mapearla y no recibe el foco (ADR 0011).
     fn on_map_request(&mut self, window: Window) -> Result<(), Fatal> {
         if let Some(desk) = self.workspaces.locate(window) {
             if desk != self.workspaces.index() {
@@ -688,16 +672,29 @@ impl<C: Connection> Wm<'_, C> {
             }
         }
         let mut focus = false;
-        if self.workspaces.get(window).is_none() {
+        if !self.workspaces.is_managed(window) {
             let Some((info, _)) = self.window_info(window)? else {
                 // La ventana desapareció antes de poder clasificarla.
                 return Ok(());
             };
-            if let Some(class) = clients::classify(&info, &self.window_types()) {
+            let class = match clients::classify(&info) {
+                Disposition::Managed(class) => Some(class),
+                Disposition::Fixed(layer) => {
+                    self.manage_fixed(window, layer, info.fullscreen)?;
+                    self.apply_layers()?;
+                    None
+                }
+                // Una override-redirect no genera MapRequest; si llegara,
+                // se mapea sin gestionarla, como antes de F9.
+                Disposition::Unmanaged => None,
+            };
+            if let Some(class) = class {
                 self.manage(window, class)?;
                 self.log_relation(window, info.transient);
                 let hidden = self.place_with_owner(window)?;
-                if class.kind == Kind::Floating {
+                // Diálogos y demás flotantes con foco; nunca los menús ni
+                // las emergentes, que conservan su posición (ADR 0011).
+                if class.centers {
                     self.center_on_owner(window)?;
                 }
                 if info.fullscreen {
@@ -739,30 +736,79 @@ impl<C: Connection> Wm<'_, C> {
     /// A pantalla completa (en mosaico o flotante) tampoco se concede nada:
     /// el `ConfigureNotify` sintético lleva el área completa y el marco
     /// guardado no cambia (ADR 0009).
+    ///
+    /// Una petición de apilamiento concedida a una flotante (que queda
+    /// dentro de las capas 2 y 3) va seguida de `apply_layers`, que
+    /// restablece las capas 1, 4 y 5 (ADR 0011). Las fijas tienen su propio
+    /// tratamiento (`configure_fixed`).
     fn on_configure_request(&mut self, event: &ConfigureRequestEvent) -> Result<(), Fatal> {
+        if let Some(fixed) = self.workspaces.fixed(event.window) {
+            return self.configure_fixed(event, fixed.layer);
+        }
         match self.workspaces.get(event.window) {
             Some(client) if client.fullscreen.is_some() => {
-                let notify = synthetic_configure_notify(event.window, self.area);
+                let notify = synthetic_configure_notify(event.window, self.area, 0);
                 self.conn
                     .send_event(false, event.window, EventMask::STRUCTURE_NOTIFY, notify)
                     .map_err(Fatal::lost)?;
             }
             Some(client) if client.kind == Kind::Tiled => {
                 if let Some(rect) = client.geometry {
-                    let notify = synthetic_configure_notify(event.window, rect);
+                    let notify = synthetic_configure_notify(event.window, rect, 0);
                     self.conn
                         .send_event(false, event.window, EventMask::STRUCTURE_NOTIFY, notify)
                         .map_err(Fatal::lost)?;
                 }
             }
-            _ => {
+            managed => {
+                let managed = managed.is_some();
                 let aux = ConfigureWindowAux::from_configure_request(event);
                 self.conn
                     .configure_window(event.window, &aux)
                     .map_err(Fatal::lost)?;
                 // Puede haber cambiado el apilamiento.
                 self.dirty.stacking = true;
+                if managed && aux.stack_mode.is_some() {
+                    self.apply_layers()?;
+                }
             }
+        }
+        Ok(())
+    }
+
+    /// ConfigureRequest de una ventana fija (ADR 0011): se concede la
+    /// geometría pedida, pero no el apilamiento (`stack_mode` y `sibling`),
+    /// porque su sitio en la pila lo decide su capa. Si no queda nada que
+    /// conceder, se responde con un ConfigureNotify sintético con la
+    /// geometría real (ICCCM §4.1.5).
+    fn configure_fixed(
+        &mut self,
+        event: &ConfigureRequestEvent,
+        layer: Layer,
+    ) -> Result<(), Fatal> {
+        let window = event.window;
+        let mut aux = ConfigureWindowAux::from_configure_request(event);
+        if aux.stack_mode.is_some() || aux.sibling.is_some() {
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x} (fija, {}): apilamiento pedido ignorado",
+                layer_name(layer)
+            );
+            aux = aux.stack_mode(None).sibling(None);
+        }
+        let geometry = aux.x.is_some()
+            || aux.y.is_some()
+            || aux.width.is_some()
+            || aux.height.is_some()
+            || aux.border_width.is_some();
+        if geometry {
+            self.conn
+                .configure_window(window, &aux)
+                .map_err(Fatal::lost)?;
+        } else if let Some(frame) = self.frame_of(window)? {
+            let notify = synthetic_configure_notify(window, frame.rect, frame.border);
+            self.conn
+                .send_event(false, window, EventMask::STRUCTURE_NOTIFY, notify)
+                .map_err(Fatal::lost)?;
         }
         Ok(())
     }
@@ -795,11 +841,6 @@ impl<C: Connection> Wm<'_, C> {
     /// reorganiza al mostrarse.
     fn forget(&mut self, window: Window, gone: Gone) -> Result<(), Fatal> {
         let pending = self.unmaps.forget(window);
-        // Antes de olvidarla: a su propietario vuelve el foco (ADR 0010).
-        let owner = self.workspaces.owner_of(window);
-        let Some((desk, removed)) = self.workspaces.unmanage(window) else {
-            return Ok(());
-        };
         let reason = match gone {
             // El cliente la desmapeó antes de que el servidor procesara el
             // desmapeo con el que el WM la ocultaba.
@@ -809,6 +850,21 @@ impl<C: Connection> Wm<'_, C> {
             Gone::Destroyed => "destruida",
             Gone::Reparented => "con otro padre",
         };
+        // Una fija: siempre visible y nunca enfocada por el WM (ADR 0011).
+        if let Some(fixed) = self.workspaces.unmanage_fixed(window) {
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x} retirada (fija, {}): {reason}",
+                layer_name(fixed.layer)
+            );
+            self.dirty.clients = true;
+            self.dirty.stacking = true;
+            return self.disown(window, gone, false, true);
+        }
+        // Antes de olvidarla: a su propietario vuelve el foco (ADR 0010).
+        let owner = self.workspaces.owner_of(window);
+        let Some((desk, removed)) = self.workspaces.unmanage(window) else {
+            return Ok(());
+        };
         eprintln!(
             "crimson-wm: ventana 0x{window:x} retirada ({}) del escritorio {}: {reason}",
             kind_name(removed.kind),
@@ -817,35 +873,7 @@ impl<C: Connection> Wm<'_, C> {
         self.dirty.clients = true;
         self.dirty.stacking = true;
         let active = desk == self.workspaces.index();
-        if gone != Gone::Destroyed {
-            // La ventana deja de ser del WM: si este termina, el servidor no
-            // debe volver a mapearla, y pierde WM_STATE (ICCCM §4.1.3.1) y
-            // _NET_WM_DESKTOP. Puede haber sido destruida justo después (un
-            // cliente que termina): los errores se descartan.
-            self.conn
-                .change_save_set(SetMode::DELETE, window)
-                .map_err(Fatal::lost)?
-                .ignore_error();
-            for property in [self.atoms.WM_STATE, self.atoms._NET_WM_DESKTOP] {
-                self.conn
-                    .delete_property(window, property)
-                    .map_err(Fatal::lost)?
-                    .ignore_error();
-            }
-            // El WM solo retira lo suyo de `_NET_WM_STATE`: FULLSCREEN.
-            if removed.fullscreen {
-                self.write_fullscreen_state(window, false)?;
-            }
-        }
-        if gone == Gone::Withdrawn && active {
-            // Retirada sintética de una ventana que el WM tiene mapeada
-            // (p. ej., la mostró justo antes de recibirla): se desmapea para
-            // que no quede visible sin gestionar.
-            self.conn
-                .unmap_window(window)
-                .map_err(Fatal::lost)?
-                .ignore_error();
-        }
+        self.disown(window, gone, removed.fullscreen, active)?;
         let back = if removed.was_focused {
             self.workspaces.focus_return(owner, desk)
         } else {
@@ -864,6 +892,49 @@ impl<C: Connection> Wm<'_, C> {
         if removed.was_focused {
             let target = back.or_else(|| self.workspaces.current().fallback());
             self.set_focus(target, CURRENT_TIME)?;
+        }
+        Ok(())
+    }
+
+    /// Lo que el WM retira de una ventana que deja de gestionar sin que
+    /// haya sido destruida: el save-set, `WM_STATE`, `_NET_WM_DESKTOP` y, si
+    /// estaba a pantalla completa, su FULLSCREEN. Una retirada sintética de
+    /// una ventana que el WM tiene mapeada (`visible`) se desmapea.
+    fn disown(
+        &mut self,
+        window: Window,
+        gone: Gone,
+        fullscreen: bool,
+        visible: bool,
+    ) -> Result<(), Fatal> {
+        if gone != Gone::Destroyed {
+            // La ventana deja de ser del WM: si este termina, el servidor no
+            // debe volver a mapearla, y pierde WM_STATE (ICCCM §4.1.3.1) y
+            // _NET_WM_DESKTOP. Puede haber sido destruida justo después (un
+            // cliente que termina): los errores se descartan.
+            self.conn
+                .change_save_set(SetMode::DELETE, window)
+                .map_err(Fatal::lost)?
+                .ignore_error();
+            for property in [self.atoms.WM_STATE, self.atoms._NET_WM_DESKTOP] {
+                self.conn
+                    .delete_property(window, property)
+                    .map_err(Fatal::lost)?
+                    .ignore_error();
+            }
+            // El WM solo retira lo suyo de `_NET_WM_STATE`: FULLSCREEN.
+            if fullscreen {
+                self.write_fullscreen_state(window, false)?;
+            }
+        }
+        if gone == Gone::Withdrawn && visible {
+            // Retirada sintética de una ventana que el WM tiene mapeada
+            // (p. ej., la mostró justo antes de recibirla): se desmapea para
+            // que no quede visible sin gestionar.
+            self.conn
+                .unmap_window(window)
+                .map_err(Fatal::lost)?
+                .ignore_error();
         }
         Ok(())
     }
@@ -1210,10 +1281,22 @@ impl<C: Connection> Wm<'_, C> {
     /// (también las que escribe el propio WM) se ignoran, así que no hay
     /// bucles. El cambio se aplica en la siguiente decisión de foco.
     ///
-    /// `WM_TRANSIENT_FOR` se trata aparte (`on_transient_for`).
+    /// `WM_TRANSIENT_FOR` se trata aparte (`on_transient_for`). Un cambio
+    /// de `_NET_WM_WINDOW_TYPE` de una ventana gestionada solo se registra:
+    /// la clasificación no cambia mientras siga gestionada y se repite
+    /// cuando se retira y vuelve a mapearse (ADR 0011).
     fn on_property_notify(&mut self, event: &PropertyNotifyEvent) -> Result<(), Fatal> {
         if event.atom == u32::from(AtomEnum::WM_TRANSIENT_FOR) {
             return self.on_transient_for(event.window);
+        }
+        if event.atom == self.atoms._NET_WM_WINDOW_TYPE {
+            if self.workspaces.is_managed(event.window) {
+                eprintln!(
+                    "crimson-wm: ventana 0x{:x}: cambio de _NET_WM_WINDOW_TYPE ignorado mientras siga gestionada (se reclasifica al volver a mapearse)",
+                    event.window
+                );
+            }
+            return Ok(());
         }
         let relevant = [u32::from(AtomEnum::WM_HINTS), self.atoms.WM_PROTOCOLS];
         if !relevant.contains(&event.atom) || self.workspaces.get(event.window).is_none() {
@@ -1307,6 +1390,19 @@ impl<C: Connection> Wm<'_, C> {
             Some(Err(invalid)) => {
                 eprintln!(
                     "crimson-wm: petición EWMH rechazada para 0x{:x}: {invalid:?}",
+                    event.window
+                );
+                Ok(())
+            }
+            // Las fijas no cambian de escritorio, ni reciben el foco, ni se
+            // cierran o ponen a pantalla completa por petición (ADR 0011).
+            Some(Ok(request))
+                if request
+                    .window()
+                    .is_some_and(|w| self.workspaces.fixed(w).is_some()) =>
+            {
+                eprintln!(
+                    "crimson-wm: petición EWMH rechazada para 0x{:x}: ventana fija ({request:?})",
                     event.window
                 );
                 Ok(())
@@ -1418,6 +1514,54 @@ impl<C: Connection> Wm<'_, C> {
         Ok(())
     }
 
+    /// Gestiona una ventana fija (ADR 0011): sin escritorio
+    /// (`_NET_WM_DESKTOP` = 0xFFFFFFFF), en NormalState, en el save-set como
+    /// las demás y sin foco. Si pide pantalla completa en `_NET_WM_STATE`, se
+    /// rechaza y se retira de la propiedad. La capa se aplica después
+    /// (`apply_layers`).
+    fn manage_fixed(
+        &mut self,
+        window: Window,
+        layer: Layer,
+        fullscreen: bool,
+    ) -> Result<(), Fatal> {
+        if !self.workspaces.manage_fixed(window, layer) {
+            return Ok(());
+        }
+        eprintln!(
+            "crimson-wm: ventana 0x{window:x} gestionada (fija, {}) en todos los escritorios",
+            layer_name(layer)
+        );
+        self.conn
+            .change_save_set(SetMode::INSERT, window)
+            .map_err(Fatal::lost)?;
+        self.set_wm_state(window, NORMAL_STATE)?;
+        self.conn
+            .change_property32(
+                PropMode::REPLACE,
+                window,
+                self.atoms._NET_WM_DESKTOP,
+                AtomEnum::CARDINAL,
+                &[ewmh::STICKY],
+            )
+            .map_err(Fatal::lost)?;
+        // PropertyChange, solo para registrar los cambios de tipo, que se
+        // ignoran. Sin FocusChange: el WM nunca la enfoca.
+        let aux = ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE);
+        self.conn
+            .change_window_attributes(window, &aux)
+            .map_err(Fatal::lost)?;
+        if fullscreen {
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x} no admite pantalla completa (estado inicial): petición rechazada"
+            );
+            self.write_fullscreen_state(window, false)?;
+        }
+        self.dirty.clients = true;
+        self.dirty.stacking = true;
+        Ok(())
+    }
+
     /// Da el foco a `target` según su modelo de entrada (ICCCM §4.1.7) y
     /// publica `_NET_ACTIVE_WINDOW`. Sin ventana, el foco vuelve a seguir al
     /// puntero, como en un servidor sin WM.
@@ -1514,6 +1658,15 @@ impl<C: Connection> Wm<'_, C> {
             return Ok(());
         };
         if client.fullscreen.is_some() == on {
+            return Ok(());
+        }
+        if on && !client.fullscreen_allowed {
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x} no admite pantalla completa ({origin}): petición rechazada"
+            );
+            // Si el cliente la pidió en `_NET_WM_STATE` antes de mapearla, se
+            // retira: la propiedad describe el estado real.
+            self.write_fullscreen_state(window, false)?;
             return Ok(());
         }
         let kind = client.kind;
@@ -1673,7 +1826,8 @@ impl<C: Connection> Wm<'_, C> {
 
     /// La ventana a pantalla completa del escritorio activo sube por encima
     /// de todo si tiene el foco y baja al fondo si no: así la enfocada, en
-    /// mosaico o flotante, queda visible (EWMH, ADR 0009).
+    /// mosaico o flotante, queda visible (EWMH, ADR 0009). Desde F9, el
+    /// fondo está justo encima de las fijas `DESKTOP` (ADR 0011).
     ///
     /// Desde F8 cuenta su familia (ADR 0010): si el foco lo tiene uno de sus
     /// dependientes del mismo escritorio (un diálogo), también sube, y sus
@@ -1701,6 +1855,10 @@ impl<C: Connection> Wm<'_, C> {
         self.conn
             .configure_window(window, &ConfigureWindowAux::new().stack_mode(mode))
             .map_err(Fatal::lost)?;
+        if !family_focused {
+            // Al fondo, pero por encima de las DESKTOP (ADR 0011).
+            self.lower_desktops()?;
+        }
         if family_focused {
             let raise = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
             let order = self.workspaces.floating_stack(index);
@@ -1890,7 +2048,45 @@ impl<C: Connection> Wm<'_, C> {
                 .map_err(Fatal::lost)?;
         }
         self.dirty.stacking = true;
-        self.restack_fullscreen()
+        self.apply_layers()
+    }
+
+    /// Capas de apilamiento (ADR 0011), de abajo arriba:
+    /// 1. las fijas `DESKTOP`;
+    /// 2. el mosaico;
+    /// 3. las flotantes (las sube `arrange`, en el orden de F8);
+    /// 4. las fijas `DOCK` y `NOTIFICATION`;
+    /// 5. la ventana a pantalla completa enfocada con sus dependientes
+    ///    (`restack_fullscreen`).
+    ///
+    /// Aquí se aplican las capas 4, 5 y 1, en ese orden. Ninguna de estas
+    /// peticiones genera eventos que vuelvan a llamar a esta función (el WM
+    /// no recibe ConfigureRequest de lo que configura él mismo), así que no
+    /// hay ciclos. Las override-redirect no se tocan: una subida del WM
+    /// puede dejar alguna por debajo hasta que su cliente la vuelva a subir.
+    fn apply_layers(&mut self) -> Result<(), Fatal> {
+        let raise = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
+        for window in self.workspaces.fixed_in(Layer::Above) {
+            self.conn
+                .configure_window(window, &raise)
+                .map_err(Fatal::lost)?;
+        }
+        self.dirty.stacking = true;
+        self.restack_fullscreen()?;
+        self.lower_desktops()
+    }
+
+    /// Capa 1 (ADR 0011): las fijas `DESKTOP` al fondo de la pila; la más
+    /// antigua, la última de todas.
+    fn lower_desktops(&mut self) -> Result<(), Fatal> {
+        let lower = ConfigureWindowAux::new().stack_mode(StackMode::BELOW);
+        for window in self.workspaces.fixed_in(Layer::Below).into_iter().rev() {
+            self.conn
+                .configure_window(window, &lower)
+                .map_err(Fatal::lost)?;
+            self.dirty.stacking = true;
+        }
+        Ok(())
     }
 
     /// Geometría del plan de un escritorio, sin tocar el apilamiento. Sirve
@@ -1980,7 +2176,7 @@ impl<C: Connection> Wm<'_, C> {
             // ICCCM espera WINDOW, pero la regla permisiva es inocua.
             transient: transient.format == 32 && transient.value_len >= 1,
             owner: TransientFor::parse(&values32(&transient), window, self.root).owner(),
-            types: values32(&types),
+            window_type: self.types.window_type(&values32(&types)),
             input: icccm::input_hint(&values32(&hints)),
             protocols: Protocols::parse(&values32(&protocols), self.protocol_atoms()),
             fullscreen: match state_read(&states)
@@ -2041,14 +2237,6 @@ impl<C: Connection> Wm<'_, C> {
         ProtocolAtoms {
             delete_window: self.atoms.WM_DELETE_WINDOW,
             take_focus: self.atoms.WM_TAKE_FOCUS,
-        }
-    }
-
-    fn window_types(&self) -> WindowTypes<'_> {
-        WindowTypes {
-            normal: self.atoms._NET_WM_WINDOW_TYPE_NORMAL,
-            floating: &self.floating_types,
-            unfocusable: &self.unfocusable_types,
         }
     }
 }
@@ -2115,8 +2303,9 @@ fn reply_or_gone<T>(
 }
 
 /// ConfigureNotify sintético con la geometría asignada, en coordenadas de
-/// la raíz (no hay reparenting) y sin borde.
-fn synthetic_configure_notify(window: Window, rect: Rect) -> ConfigureNotifyEvent {
+/// la raíz (no hay reparenting): sin borde en las que coloca el WM y con el
+/// suyo en las fijas.
+fn synthetic_configure_notify(window: Window, rect: Rect, border: u16) -> ConfigureNotifyEvent {
     ConfigureNotifyEvent {
         response_type: x11rb::protocol::xproto::CONFIGURE_NOTIFY_EVENT,
         sequence: 0,
@@ -2127,7 +2316,7 @@ fn synthetic_configure_notify(window: Window, rect: Rect) -> ConfigureNotifyEven
         y: rect.y,
         width: rect.width,
         height: rect.height,
-        border_width: 0,
+        border_width: border,
         override_redirect: false,
     }
 }
@@ -2211,6 +2400,13 @@ fn kind_name(kind: Kind) -> &'static str {
     }
 }
 
+fn layer_name(layer: Layer) -> &'static str {
+    match layer {
+        Layer::Below => "capa inferior",
+        Layer::Above => "capa superior",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2223,7 +2419,7 @@ mod tests {
             width: 640,
             height: 360,
         };
-        let event = synthetic_configure_notify(0x20_0001, rect);
+        let event = synthetic_configure_notify(0x20_0001, rect, 0);
         assert_eq!(event.response_type, 22);
         assert_eq!((event.event, event.window), (0x20_0001, 0x20_0001));
         assert_eq!(
@@ -2232,6 +2428,8 @@ mod tests {
         );
         assert_eq!((event.border_width, event.above_sibling), (0, 0));
         assert!(!event.override_redirect);
+        // Una fija conserva su borde (ADR 0011).
+        assert_eq!(synthetic_configure_notify(1, rect, 3).border_width, 3);
         // Se serializa en los 32 bytes de un evento X11.
         let bytes: [u8; 32] = event.into();
         assert_eq!(bytes[0], 22);
