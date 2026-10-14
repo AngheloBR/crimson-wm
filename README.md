@@ -2,29 +2,34 @@
 
 Gestor de ventanas para X11, escrito en Rust y dirigido inicialmente a
 Debian 13 (Trixie), orientado a la gestión de ventanas en mosaico. Por ahora
-es un prototipo con un único diseño, master-stack, y ocho escritorios
-virtuales (ver «Estado»).
+es un prototipo con un único diseño, master-stack, ocho escritorios
+virtuales y compatibilidad parcial con ICCCM y EWMH (ver «Estado»).
 
 ## Estado
 
-Fase F5: ocho escritorios virtuales, sobre el lanzamiento de aplicaciones,
-el foco por teclado y el mosaico master-stack. **Todavía no es un gestor de
-ventanas utilizable:** solo arranca en un servidor X de prueba que supere
-las salvaguardas del ADR 0003, coloca las ventanas normales en mosaico,
-deja flotantes los diálogos, gestiona el foco con el teclado, reparte las
-ventanas en ocho escritorios, lanza seis programas fijos y termina con el
-atajo provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones,
-varios monitores ni configuración.
+Fase F6: compatibilidad ICCCM/EWMH (identificación del WM, cierre de
+ventanas y peticiones de paneles y herramientas), sobre los escritorios
+virtuales, el lanzamiento de aplicaciones, el foco por teclado y el mosaico
+master-stack. **Todavía no es un gestor de ventanas utilizable:** solo
+arranca en un servidor X de prueba que supere las salvaguardas del ADR 0003,
+coloca las ventanas normales en mosaico, deja flotantes los diálogos,
+gestiona el foco con el teclado, reparte las ventanas en ocho escritorios,
+cierra ventanas, lanza seis programas fijos y termina con el atajo
+provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones, pantalla
+completa, varios monitores ni configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
 (2026-10-11). Últimos resultados registrados, todos del 2026-10-13 en Xvfb
-sobre el binario de depuración de F5 (detalles y limitaciones en los ADR
-0003 a 0007):
+sobre el binario de depuración de F6 (detalles y limitaciones en los ADR
+0003 a 0008):
 
-- Pruebas unitarias U1–U14 (80 pruebas de `cargo test`): pasaron.
-- Aceptación de F5: A41–A51 pasaron y **A52 quedó parcial**, porque la
-  consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
-  programas falsos, nunca las aplicaciones reales.
+- Pruebas unitarias U1–U16 (94 pruebas de `cargo test`): pasaron.
+- Aceptación de F6: A53–A62 y el caso A64 pasaron; las comprobaciones de
+  sesión de **A64 quedaron parciales**, porque la consulta de la raíz de
+  `:0` se omite deliberadamente. Solo se lanzaron programas falsos, nunca
+  las aplicaciones reales.
+- Regresión de F5: A41–A51 pasaron y **A52 quedó parcial** por el mismo
+  motivo.
 - Regresión de F4: A33–A39 pasaron y **A40 quedó parcial** por el mismo
   motivo.
 - Regresión de F3: A22–A31 pasaron y **A32 quedó parcial** por el mismo
@@ -73,11 +78,13 @@ raíz del servidor: `xeyes` usa una ventana con forma.*
 | `Mod4+j` / `Mod4+k` | Enfoca la ventana siguiente o anterior: primero el mosaico (maestra y pila de arriba abajo) y después las flotantes, con vuelta al principio |
 | `Mod4+Shift+Return` | La ventana enfocada pasa a maestra; si ya lo es, se intercambia con la segunda |
 | `Mod4+Shift+Escape` | Termina el WM (atajo provisional) |
+| `Mod4+w` | Pide a la ventana enfocada que se cierre (`WM_DELETE_WINDOW`; desde F6) |
+| `Mod4+Shift+w` | Cierra a la fuerza el cliente de la ventana enfocada: **todas** sus ventanas (`KillClient`; desde F6) |
 
 Combinaciones reservadas para fases posteriores, **todavía sin implementar
-ni capturar**: `Mod4+h` y `Mod4+l` (foco a izquierda y derecha), `Mod4+w`
-(cerrar) y `Mod4+Shift+w` (forzar el cierre). Las de aplicaciones se
-implementaron en F4 (ver «Lanzamiento de aplicaciones»). Desde F5, el foco,
+ni capturar**: `Mod4+h` y `Mod4+l` (foco a izquierda y derecha). Las de
+aplicaciones se implementaron en F4 (ver «Lanzamiento de aplicaciones») y
+las de cierre en F6 (ver «Compatibilidad ICCCM/EWMH»). Desde F5, el foco,
 la navegación y el Zoom son por escritorio (ver «Escritorios virtuales»).
 
 - Una ventana nueva recibe el foco al abrirse, salvo los paneles, avisos,
@@ -87,9 +94,8 @@ la navegación y el Zoom son por escritorio (ver «Escritorios virtuales»).
 - El foco respeta los modelos de entrada de ICCCM (incluido el mensaje
   `WM_TAKE_FOCUS`), y el WM sigue los cambios de foco que hacen los propios
   clientes.
-- La ventana activa se publica en `_NET_ACTIVE_WINDOW`. Es una
-  compatibilidad parcial con EWMH: el WM no declara soporte EWMH, así que
-  algunas herramientas no la leen.
+- La ventana activa se publica en `_NET_ACTIVE_WINDOW`; desde F6 el soporte
+  EWMH está declarado y las herramientas la leen.
 
 Detalles, casos límite y limitaciones en el ADR 0005.
 
@@ -149,13 +155,48 @@ Detalles, casos límite y limitaciones en el ADR 0006.
 
 Detalles, casos límite y limitaciones en el ADR 0007.
 
+## Compatibilidad ICCCM/EWMH (F6)
+
+![Diagrama de F6: arranque e identificación del WM, mensajes ICCCM y EWMH entre las aplicaciones, el servidor X11 y Crimson WM, políticas de las peticiones externas, salida y funciones aplazadas](docs/images/crimson-wm-f6-icccm-ewmh.png)
+
+*Diagrama técnico elaborado a partir del código de F6; no es una captura.
+Fuente editable: `docs/images/crimson-wm-f6-icccm-ewmh.svg`.*
+
+- **Identificación:** solo después de superar las salvaguardas, el WM crea
+  una ventana de comprobación y, con el servidor capturado, adquiere la
+  selección `WM_S0` y publica `_NET_SUPPORTING_WM_CHECK` y `_NET_SUPPORTED`.
+  Así lo reconocen paneles, lanzadores y xdotool.
+- **Salvaguardas:** si ya hay otro gestor (la propiedad, aunque sea
+  obsoleta, o `WM_S0` con propietario), el WM no arranca (código 12). Si
+  otro cliente le quita `WM_S0`, termina sin intentar recuperarla. Tras
+  `SIGTERM` o `SIGKILL` la propiedad queda obsoleta y el siguiente arranque
+  en ese servidor se rechaza hasta borrarla a mano
+  (`xprop -root -remove _NET_SUPPORTING_WM_CHECK`, solo en el servidor de
+  prueba).
+- **Lo que se declara:** listas de ventanas (`_NET_CLIENT_LIST` y
+  `_NET_CLIENT_LIST_STACKING`), ventana activa, escritorios, cierre y los
+  tipos de ventana normal, diálogo, utilidad y barra de herramientas. Nada
+  más: la pantalla completa (F7), los paneles con espacio reservado, las
+  ventanas sticky y otras funciones siguen pendientes.
+- **Peticiones externas:**
+  - un paginador puede cambiar de escritorio y enfocar una ventana;
+  - una aplicación solo puede enfocar ventanas del escritorio activo;
+  - se pueden mover ventanas entre los ocho escritorios;
+  - el cierre por petición es siempre cooperativo: una aplicación que no
+    admite `WM_DELETE_WINDOW` nunca se termina a la fuerza por una petición
+    externa.
+- `WM_TAKE_FOCUS` lleva siempre una marca de tiempo real, y los cambios de
+  `WM_HINTS` y `WM_PROTOCOLS` se tienen en cuenta.
+
+Detalles, casos límite y limitaciones en el ADR 0008.
+
 ## Arranque y eventos
 
-![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, adopta las ventanas visibles, atiende los eventos de mosaico, foco y escritorios y lanza programas sin shell; :0 se rechaza](docs/images/crimson-wm-overview.svg)
+![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, se identifica (WM_S0 y EWMH), adopta las ventanas visibles, atiende los eventos de mosaico, foco, escritorios y cierre y lanza programas sin shell; :0 se rechaza](docs/images/crimson-wm-overview.svg)
 
 *Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 a
-0007. No es una captura ni demuestra una ejecución; los resultados de las
-pruebas están en los ADR 0003 a 0007.*
+0008. No es una captura ni demuestra una ejecución; los resultados de las
+pruebas están en los ADR 0003 a 0008.*
 
 ## Principios
 
@@ -196,6 +237,7 @@ pruebas están en los ADR 0003 a 0007.*
 |---|---|---|
 | `cargo-deny`, `cargo-audit` | Licencias y avisos de seguridad de dependencias | Aplazadas hasta que el árbol de dependencias lo justifique |
 | `imagemagick` (`magick`), `x11-apps` (`xwd`, `xeyes`) | Solo documentación: generar el PNG de la ilustración desde su SVG y la captura de prueba en Xvfb. Ningún script del arnés los usa | Instalados |
+| `librsvg2-2`, `libcairo2`, `python3` | Solo documentación: desde F6, renderizar fielmente los SVG a PNG (librsvg y cairo llamados con `ctypes`; ver ADR 0008). El renderizador interno de ImageMagick no dibuja los trazos | Instalados |
 | `ss` (`iproute2`) | Posible comprobación adicional de a qué servidor se conecta el WM (`ss -xp`, ver ADR 0003). Ningún script del arnés actual la usa | Instalada; pendiente de validar |
 
 No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
@@ -205,7 +247,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U14)
+### Unitarias (U1–U16)
 
 ```sh
 cargo test --locked
@@ -306,14 +348,34 @@ tests/acceptance/f5/run.sh [BINARIO]
   anteriores, cuyas guardas, funciones y programas falsos reutiliza.
   Exige además `target/debug/examples/test-client`, más reciente que las
   fuentes.
-- `test-client` (`examples/test-client.rs`) solo envía, dentro del Xvfb de
-  cada prueba, el `UnmapNotify` sintético con el que una aplicación retira
-  una ventana (ICCCM). Rechaza cualquier `DISPLAY` que no sea `:N` con N
+- `test-client` (`examples/test-client.rs`) envía, dentro del Xvfb de cada
+  prueba, el `UnmapNotify` sintético con el que una aplicación retira una
+  ventana (ICCCM); desde F6 tiene más órdenes (ver F6). Rechaza cualquier `DISPLAY` que no sea `:N` con N
   distinto de 0.
 - A51 termina con `SIGTERM` y `SIGKILL` el proceso `crimson-wm` hijo del
   `timeout` que lanzó el propio arnés, nunca otro.
 - A52 equivale a A9 y queda siempre parcial.
 - Los resultados se guardan en un directorio nuevo `crimson-f5.XXXXXX`
+  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+
+### Aceptación de F6 (A53–A62 y A64)
+
+```sh
+cargo build --locked --examples
+tests/acceptance/f6/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas, código de salida, aislamiento y
+  programas falsos que el arnés de F5.
+- `test-client` también envía mensajes EWMH, toma selecciones y crea
+  ventanas que registran los mensajes `WM_PROTOCOLS` recibidos. Sigue
+  rechazando cualquier `DISPLAY` que no sea `:N` con N distinto de 0.
+- A54 y A64 envían `SIGKILL` y `SIGTERM` solo al proceso `crimson-wm` hijo
+  del `timeout` del arnés. La propiedad obsoleta que deja la terminación
+  abrupta solo la borra el arnés, explícitamente, en el Xvfb de la prueba.
+- A63 (pantalla completa) queda para F7. Las comprobaciones de sesión de
+  A64 equivalen a A9 y quedan siempre parciales.
+- Los resultados se guardan en un directorio nuevo `crimson-f6.XXXXXX`
   dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
 
 Desde F4, todos los arneses arrancan el WM con `env -i` y un entorno
@@ -339,7 +401,8 @@ Nunca se usará `-ac`, que desactiva el control de acceso de X11.
 Salvaguardas (detalle en `docs/adr/0003-salvaguardas-desarrollo.md`):
 solo displays locales por socket Unix; rechazo incondicional del display
 número 0; marca de sandbox `_CRIMSON_SANDBOX`; y rechazo si ya hay otro
-gestor de ventanas (`_NET_SUPPORTING_WM_CHECK` o `BadAccess`). Son
+gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
+`BadAccess`). Son
 **salvaguardas contra accidentes, no una frontera de seguridad.**
 
 ## Documentación
@@ -353,6 +416,8 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK` o `BadAccess`). Son
 - `docs/adr/0006-lanzamiento-de-aplicaciones.md`: lanzamiento de
   aplicaciones de F4.
 - `docs/adr/0007-escritorios-virtuales.md`: escritorios virtuales de F5.
+- `docs/adr/0008-compatibilidad-icccm-ewmh.md`: compatibilidad ICCCM/EWMH
+  de F6.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior

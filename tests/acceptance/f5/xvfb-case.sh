@@ -257,12 +257,12 @@ A41)
     alive=0
     for n in "${names[@]}"; do kill -0 "${PIDS[$n]}" && alive=$((alive + 1)); done
     record A41-aplicaciones-vivas 8 "$alive" "$(ok_if test "$alive" = 8)" "kill -0 a los 8 xev tras recorrer los escritorios"
+    # Desde F6 (ADR 0008) el soporte EWMH está declarado: la raíz apunta a la
+    # ventana de comprobación y publica _NET_SUPPORTED.
     verdict=FALLA
-    # Ausente: la propiedad no está («not found») o ni siquiera existe el
-    # átomo («no such atom»).
-    sup=$(xprop -root _NET_SUPPORTED _NET_SUPPORTING_WM_CHECK | grep -cE 'not found|no such atom')
-    [[ $sup == 2 ]] && verdict=OK
-    record A41-ewmh-parcial "sin _NET_SUPPORTED ni _NET_SUPPORTING_WM_CHECK" "$((2 - sup)) presentes" "$verdict" "xprop -root: soporte EWMH no declarado"
+    check=$(xprop -root _NET_SUPPORTING_WM_CHECK)
+    xprop -root _NET_SUPPORTED | grep -q '_NET_WM_DESKTOP' && [[ $check == *"window id # 0x"* ]] && verdict=OK
+    record A41-ewmh-declarado "_NET_SUPPORTING_WM_CHECK y _NET_SUPPORTED presentes" "$check" "$verdict" "xprop -root (ADR 0008)"
     record A41-sin-retiradas 0 "$(retirements)" "$(ok_if test "$(retirements)" = 0)" "líneas «retirada» en $WM_ID.log: los desmapeos del WM no son retiradas"
     stop
     ;;
@@ -604,6 +604,12 @@ A51)
     verdict=FALLA
     wait_for vis_is "A=v B=v C=v W=o X=o Y=o" A B C W X Y && verdict=OK
     record A51-sigterm "A=v B=v C=v W=o X=o Y=o" "$(vis A B C W X Y)" "$verdict" "antes de la señal (escritorio 5): $term_before"
+    # Desde F6 (ADR 0008), tras una terminación abrupta queda
+    # _NET_SUPPORTING_WM_CHECK obsoleta y el siguiente arranque se rechaza
+    # (fail-closed). El arnés la borra explícitamente en este Xvfb, como
+    # haría el operador; el WM nunca lo hace.
+    run_bin A51-tras-sigterm 12 '_NET_SUPPORTING_WM_CHECK .*inexistente: obsoleta'
+    xprop -root -remove _NET_SUPPORTING_WM_CHECK
 
     # SIGKILL: sin ninguna oportunidad de limpiar; solo el save-set.
     restart A51-kill

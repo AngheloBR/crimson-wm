@@ -72,7 +72,11 @@ A6)
     set_marker "$TOKEN"
     start_wm A6-primera
     require_ready
-    run_bin A6-segunda 12 'BadAccess'
+    # Desde F6 (ADR 0008) la primera instancia publica
+    # _NET_SUPPORTING_WM_CHECK y toma WM_S0: la segunda la detecta ya en la
+    # capa 3. La capa 4 (BadAccess) se prueba en A54 de F6.
+    precondition "primera instancia identificada" wait_for grep -q 'identificación publicada' "$WM_LOG"
+    run_bin A6-segunda 12 '_NET_SUPPORTING_WM_CHECK \(0x[0-9a-f]+, existente\)'
     precondition "la primera instancia sigue en marcha" kill -0 "$WM_PID"
     xdotool key super+shift+Escape
     wait_wm 0 'atajo de salida recibido'

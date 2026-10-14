@@ -13,6 +13,12 @@
   pasan a ser por escritorio virtual. Los `FocusIn` de ventanas de otro
   escritorio se ignoran. Se añaden 17 atajos obligatorios de escritorio y
   `WM_STATE` (ADR 0007).
+- **Actualización F6 (2026-10-13):** `WM_TAKE_FOCUS` ya no se envía con
+  `CurrentTime`. Lleva la marca de la pulsación o, si no la hay, la hora del
+  servidor; `SetInputFocus` sigue usando `CurrentTime` en ese caso. Los
+  cambios de `WM_HINTS` y `WM_PROTOCOLS` se siguen con `PropertyNotify`.
+  `Mod4+w` y `Mod4+Shift+w` dejan de estar reservados: cierran ventanas. Se
+  atienden las peticiones `_NET_ACTIVE_WINDOW` (ADR 0008).
 
 ## Contexto
 
@@ -94,6 +100,10 @@ Otras funciones, para fases posteriores:
 | `Mod4+w` | Cerrar la ventana |
 | `Mod4+Shift+w` | Forzar el cierre, sujeto a una política segura |
 
+*`Mod4+w` y `Mod4+Shift+w` se implementaron en F6 (ADR 0008):
+`WM_DELETE_WINDOW` y `KillClient`; solo `Mod4+h` y `Mod4+l` siguen
+reservadas.*
+
 ### Modelo del foco
 
 - `Clients` guarda un historial de foco (`history`), de la ventana más
@@ -135,6 +145,8 @@ Otras funciones, para fases posteriores:
 - **Marca de tiempo:** la del `KeyPress` del atajo. Cuando el cambio no
   viene de una pulsación (apertura, cierre o arranque), `CurrentTime`: el WM
   no tiene una ventana propia con la que obtener una marca del servidor.
+  *Desde F6, `WM_TAKE_FOCUS` lleva en ese caso la hora del servidor,
+  obtenida con la ventana de comprobación (ADR 0008).*
 - **Lectura robusta:** `WM_HINTS` y `WM_PROTOCOLS` se leen como propiedades
   sin interpretar y se analizan en `clients.rs`. Un valor mal formado o de
   otro tipo cuenta como ausente. No se usa `WmHints::get` de x11rb 0.14,
@@ -283,11 +295,12 @@ ejercitan todos los casos de F3.
 - **`FocusIn` antiguos:** la regla por número de secuencia solo está
   revisada en el código; las pruebas no provocan esa carrera.
 - **Marcas de tiempo:** `CurrentTime` en los cambios que no vienen de una
-  pulsación (ver «Modelos de entrada»).
+  pulsación (ver «Modelos de entrada»). *Corregido para `WM_TAKE_FOCUS` en
+  F6 (ADR 0008).*
 - **Sin ratón:** mover el puntero ya no cambia el foco y no hay clic para
   enfocar.
 - **Propiedades fijas:** `WM_HINTS` y `WM_PROTOCOLS` se leen al gestionar la
-  ventana; sus cambios posteriores (`PropertyNotify`) no se atienden.
+  ventana; sus cambios posteriores (`PropertyNotify`) no se atienden. *Resuelto en F6 (ADR 0008).*
 - **Mapa de teclado fijo:** tras un `MappingNotify` los atajos no se vuelven
   a capturar (como en F1).
 - **Sin prevención del robo de foco:** toda ventana nueva que admite foco lo

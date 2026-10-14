@@ -59,9 +59,15 @@ for b in "$BIN" "$TEST_CLIENT"; do
     fi
 done
 BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
+# Cada binario se compara con sus fuentes: el WM no depende de examples/.
 for b in "$BIN" "$TEST_CLIENT"; do
-    [[ $b == "$BIN" ]] && (($#)) && continue
-    if [[ -n $(find "$ROOT/src" "$ROOT/examples" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" -newer "$b" -print -quit) ]]; then
+    sources=("$ROOT/src" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock")
+    if [[ $b == "$BIN" ]]; then
+        (($#)) && continue
+    else
+        sources+=("$ROOT/examples")
+    fi
+    if [[ -n $(find "${sources[@]}" -newer "$b" -print -quit) ]]; then
         echo "run.sh: $b es anterior a las fuentes (ejecuta cargo build --examples)" >&2
         exit 2
     fi
@@ -114,7 +120,7 @@ extras() { printf '%s ' "$1" "$1-aislamiento" "$1-extra-solo-falsos" "$1-extra-s
 # shellcheck disable=SC2207 # los identificadores no contienen espacios
 expected=(
     $(extras A41) A41-numero A41-escritorio-{1..8} A41-escritorio-8-de-nuevo A41-escritorio-1-de-nuevo
-    A41-propiedades A41-aplicaciones-vivas A41-ewmh-parcial A41-sin-retiradas
+    A41-propiedades A41-aplicaciones-vivas A41-ewmh-declarado A41-sin-retiradas
     $(extras A42) A42-inicial A42-escritorio-2 A42-mosaico-2 A42-vuelta A42-vuelta-mosaico A42-vuelta-navegacion
     $(extras A43) A43-origen A43-origen-mosaico A43-propiedades A43-destino A43-destino-mosaico
     A43-propiedades-destino A43-mismo-escritorio A43-sin-ventana A43-vuelta
@@ -131,7 +137,7 @@ expected=(
     A49-mover-mantenido A49-una-sola-movida
     $(extras A50) A50-mosaico A50-navegacion A50-zoom A50-lanzamiento A50-tras-cambios A50-hijo-sobrevive
     $(extras A51) A51-antes-de-salir A51-salida-normal A51-salida-propiedades A51-term A51-sigterm
-    A51-kill A51-sigkill A51-aplicaciones-vivas
+    A51-tras-sigterm A51-kill A51-sigkill A51-aplicaciones-vivas
     A52-sin-panico A52-xprop-:0 A52-sin-falsos-en-marcha A52-sin-aplicaciones-nuevas
 )
 for id in "${expected[@]}"; do

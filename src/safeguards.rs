@@ -65,24 +65,75 @@ fn marker_matches(token: &str, reply: &GetPropertyReply) -> bool {
         && reply.value == token.as_bytes()
 }
 
-/// Capa 3: rechazo conservador si la raíz tiene `_NET_SUPPORTING_WM_CHECK`,
-/// aunque sea obsoleta.
-pub fn check_no_other_wm(conn: &impl Connection, root: Window) -> Result<(), Fatal> {
-    let Some(atom) = existing_atom(conn, WM_CHECK_ATOM)? else {
-        return Ok(());
-    };
-    let reply = conn
-        .get_property(false, root, atom, AtomEnum::ANY, 0, 0)
+/// Capa 3: rechazo conservador si hay, o hubo, otro gestor de ventanas.
+/// Nunca crea átomos ni modifica nada del servidor.
+///
+/// - La raíz tiene `_NET_SUPPORTING_WM_CHECK`, aunque sea obsoleta: también
+///   la que deja Crimson WM tras una terminación abrupta (ADR 0008). El
+///   mensaje indica si la ventana a la que apunta existe, solo como
+///   diagnóstico.
+/// - Desde F6, la selección `WM_S{pantalla}` (ICCCM §2.8) tiene propietario:
+///   detecta también los gestores que no usan EWMH.
+pub fn check_no_other_wm(conn: &impl Connection, root: Window, screen: u16) -> Result<(), Fatal> {
+    if let Some(atom) = existing_atom(conn, WM_CHECK_ATOM)? {
+        let reply = conn
+            .get_property(false, root, atom, AtomEnum::ANY, 0, 1)
+            .map_err(Fatal::lost)?
+            .reply()
+            .map_err(|e| Fatal::startup("GetProperty(_NET_SUPPORTING_WM_CHECK)", e))?;
+        if reply.type_ != u32::from(AtomEnum::NONE) {
+            let target = check_target(&reply);
+            let state = match target {
+                Some(window) => format!("0x{window:x}, {}", window_state(conn, window)?),
+                None => "valor no válido".into(),
+            };
+            return Err(Fatal::OtherWm(format!(
+                "la raíz tiene _NET_SUPPORTING_WM_CHECK ({state}): hay, o hubo, otro gestor de ventanas"
+            )));
+        }
+    }
+    if let Some(selection) = existing_atom(conn, manager_selection(screen).as_bytes())? {
+        let owner = conn
+            .get_selection_owner(selection)
+            .map_err(Fatal::lost)?
+            .reply()
+            .map_err(|e| Fatal::startup("GetSelectionOwner(WM_Sn)", e))?
+            .owner;
+        if owner != x11rb::NONE {
+            return Err(Fatal::OtherWm(format!(
+                "la selección {} tiene propietario (0x{owner:x}): hay otro gestor de ventanas",
+                manager_selection(screen)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Nombre de la selección del gestor de ventanas de la pantalla (ICCCM
+/// §2.8).
+pub fn manager_selection(screen: u16) -> String {
+    format!("WM_S{screen}")
+}
+
+/// Ventana a la que apunta `_NET_SUPPORTING_WM_CHECK`, si el valor tiene la
+/// forma esperada (formato 32, al menos un elemento).
+fn check_target(reply: &GetPropertyReply) -> Option<Window> {
+    reply
+        .value32()
+        .and_then(|mut values| values.next())
+        .filter(|_| reply.format == 32)
+}
+
+/// Solo para el diagnóstico: si la ventana existe (lectura sin efectos).
+fn window_state(conn: &impl Connection, window: Window) -> Result<&'static str, Fatal> {
+    match conn
+        .get_window_attributes(window)
         .map_err(Fatal::lost)?
         .reply()
-        .map_err(|e| Fatal::startup("GetProperty(_NET_SUPPORTING_WM_CHECK)", e))?;
-
-    if reply.type_ == u32::from(AtomEnum::NONE) {
-        Ok(())
-    } else {
-        Err(Fatal::OtherWm(
-            "la raíz tiene _NET_SUPPORTING_WM_CHECK: hay, o hubo, otro gestor de ventanas".into(),
-        ))
+    {
+        Ok(_) => Ok("existente"),
+        Err(x11rb::errors::ReplyError::ConnectionError(e)) => Err(Fatal::lost(e)),
+        Err(x11rb::errors::ReplyError::X11Error(_)) => Ok("inexistente: obsoleta"),
     }
 }
 
@@ -140,6 +191,22 @@ mod tests {
         let no_unicode = OsString::from_vec(vec![0xff]);
         assert_eq!(sandbox_token(Some(no_unicode)).unwrap_err().exit_code(), 10);
         assert_eq!(sandbox_token(Some("abc".into())).unwrap(), "abc");
+    }
+
+    #[test]
+    fn seleccion_del_gestor() {
+        assert_eq!(manager_selection(0), "WM_S0");
+        assert_eq!(manager_selection(3), "WM_S3");
+    }
+
+    #[test]
+    fn ventana_de_la_comprobacion() {
+        let window = 0x60_0001u32.to_ne_bytes();
+        let mut reply = property(AtomEnum::WINDOW, 32, &window, 0);
+        assert_eq!(check_target(&reply), Some(0x60_0001));
+        reply.format = 8;
+        assert_eq!(check_target(&reply), None, "formato 8");
+        assert_eq!(check_target(&property(AtomEnum::WINDOW, 32, &[], 0)), None);
     }
 
     #[test]

@@ -1,13 +1,15 @@
-//! Crimson WM, fase F5: mosaico master-stack (ADR 0004), foco por teclado
-//! (ADR 0005), lanzamiento de aplicaciones (ADR 0006) y escritorios virtuales
-//! (ADR 0007). Solo arranca en un servidor X de prueba que supere las
-//! salvaguardas del ADR 0003.
+//! Crimson WM, fase F6: mosaico master-stack (ADR 0004), foco por teclado
+//! (ADR 0005), lanzamiento de aplicaciones (ADR 0006), escritorios virtuales
+//! (ADR 0007) y compatibilidad ICCCM/EWMH (ADR 0008). Solo arranca en un
+//! servidor X de prueba que supere las salvaguardas del ADR 0003.
 
 mod cli;
 mod clients;
 mod connect;
 mod display;
 mod error;
+mod ewmh;
+mod icccm;
 mod keys;
 mod layout;
 mod safeguards;
@@ -74,7 +76,7 @@ fn run() -> Result<(), Fatal> {
     );
 
     safeguards::check_sandbox_marker(&conn, screen.root, &token)?;
-    safeguards::check_no_other_wm(&conn, screen.root)?;
+    safeguards::check_no_other_wm(&conn, screen.root, target.screen)?;
     safeguards::take_substructure_redirect(&conn, screen.root)?;
     eprintln!(
         "crimson-wm: salvaguardas superadas; gestionando la raíz 0x{:x}",

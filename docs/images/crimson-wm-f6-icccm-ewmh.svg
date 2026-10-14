@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1540" viewBox="0 0 1400 1540" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F6: compatibilidad ICCCM y EWMH</title>
+  <desc id="desc">Diagrama técnico basado en el código de F6 (ADR 0008); no es una
+    captura ni una prueba de ejecución. Muestra el arranque seguro (capa 3
+    ampliada, ventana de comprobación, hora del servidor, adquisición de WM_S0
+    con el servidor capturado, publicación de _NET_SUPPORTING_WM_CHECK y
+    _NET_SUPPORTED y anuncio MANAGER), los mensajes entre las aplicaciones,
+    el servidor X11 y Crimson WM (WM_PROTOCOLS, WM_TAKE_FOCUS,
+    WM_DELETE_WINDOW, KillClient, peticiones EWMH externas, listas de
+    clientes), las políticas de las peticiones, la limpieza al salir y lo
+    aplazado, que no se declara en _NET_SUPPORTED.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif; font-size: 14px; fill: #1F2328; }
+      .title { font-size: 26px; font-weight: 700; }
+      .h { font-size: 17px; font-weight: 700; }
+      .h2 { font-size: 15px; font-weight: 700; }
+      .b { font-weight: 700; }
+      .muted { fill: #57606A; }
+      .accent { fill: #8B0A1F; }
+      .mono { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 13px; }
+      .small { font-size: 13px; }
+      .label { font-size: 13.5px; stroke: #FFFFFF; stroke-width: 5px; stroke-linejoin: round; paint-order: stroke; }
+      .num { font-size: 15px; font-weight: 700; fill: #FFFFFF; }
+      .frame { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .box { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .soft { fill: #F6F8FA; stroke: #1F2328; stroke-width: 1.5; }
+      .guard { fill: #FFFFFF; stroke: #8B0A1F; stroke-width: 2; }
+      .deferred { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 6 5; }
+      .flow { stroke: #1F2328; stroke-width: 1.8; }
+      .flow-red { stroke: #8B0A1F; stroke-width: 2; }
+      .badge { fill: #8B0A1F; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#1F2328"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#8B0A1F"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="1540" fill="#FFFFFF"/>
+  <text class="title" x="30" y="46">Crimson WM · F6: compatibilidad ICCCM/EWMH</text>
+  <text class="muted" x="30" y="74">Diagrama técnico del código de F6 (ADR 0008). No es una captura ni demuestra una ejecución.</text>
+
+  <!-- 1. Arranque e identificación -->
+  <rect class="frame" x="30" y="92" width="1340" height="372" rx="8"/>
+  <text class="h" x="48" y="122">1 · Arranque e identificación, después de las capas 1 a 4 del ADR 0003</text>
+  <rect class="guard" x="45" y="140" width="410" height="124" rx="6"/>
+  <circle class="badge" cx="67" cy="164" r="13"/>
+  <text class="num" x="67" y="169" text-anchor="middle">1</text>
+  <text class="h2" x="89" y="170">Capa 3 ampliada</text>
+  <text class="small" x="61" y="198">Rechazo (código 12) si la raíz ya tiene</text>
+  <text class="small" x="61" y="217">_NET_SUPPORTING_WM_CHECK, aunque sea</text>
+  <text class="small" x="61" y="236">obsoleta, o si WM_S0 tiene propietario.</text>
+  <text class="small" x="61" y="255">No crea átomos ni escribe nada.</text>
+  <line class="flow" x1="457" y1="202" x2="493" y2="202" marker-end="url(#arrow)"/>
+  <rect class="box" x="495" y="140" width="410" height="124" rx="6"/>
+  <circle class="badge" cx="517" cy="164" r="13"/>
+  <text class="num" x="517" y="169" text-anchor="middle">2</text>
+  <text class="h2" x="539" y="170">Ventana de comprobación</text>
+  <text class="small" x="511" y="198">InputOnly, override-redirect, sin mapear.</text>
+  <text class="small" x="511" y="217">_NET_SUPPORTING_WM_CHECK → ella misma</text>
+  <text class="small" x="511" y="236">_NET_WM_NAME = «Crimson WM»</text>
+  <line class="flow" x1="907" y1="202" x2="943" y2="202" marker-end="url(#arrow)"/>
+  <rect class="box" x="945" y="140" width="410" height="124" rx="6"/>
+  <circle class="badge" cx="967" cy="164" r="13"/>
+  <text class="num" x="967" y="169" text-anchor="middle">3</text>
+  <text class="h2" x="989" y="170">Hora del servidor</text>
+  <text class="small" x="961" y="198">ChangeProperty vacío en esa ventana:</text>
+  <text class="small" x="961" y="217">el PropertyNotify trae la marca de</text>
+  <text class="small" x="961" y="236">tiempo. Nunca CurrentTime para WM_S0.</text>
+  <rect class="guard" x="45" y="300" width="410" height="124" rx="6"/>
+  <circle class="badge" cx="67" cy="324" r="13"/>
+  <text class="num" x="67" y="329" text-anchor="middle">4</text>
+  <text class="h2" x="89" y="330">GrabServer: comprobar y adquirir</text>
+  <text class="small" x="61" y="358">Vuelve a comprobar WM_S0 y la raíz,</text>
+  <text class="small" x="61" y="377">SetSelectionOwner(WM_S0, hora) y</text>
+  <text class="small" x="61" y="396">verifica que el propietario es suyo.</text>
+  <line class="flow" x1="457" y1="362" x2="493" y2="362" marker-end="url(#arrow)"/>
+  <rect class="box" x="495" y="300" width="410" height="124" rx="6"/>
+  <circle class="badge" cx="517" cy="324" r="13"/>
+  <text class="num" x="517" y="329" text-anchor="middle">5</text>
+  <text class="h2" x="539" y="330">Publicar en la raíz</text>
+  <text class="small" x="511" y="358">_NET_SUPPORTING_WM_CHECK → la ventana</text>
+  <text class="small" x="511" y="377">_NET_SUPPORTED: 14 átomos exactos</text>
+  <text class="small" x="511" y="396">UngrabServer</text>
+  <line class="flow" x1="907" y1="362" x2="943" y2="362" marker-end="url(#arrow)"/>
+  <rect class="box" x="945" y="300" width="410" height="124" rx="6"/>
+  <circle class="badge" cx="967" cy="324" r="13"/>
+  <text class="num" x="967" y="329" text-anchor="middle">6</text>
+  <text class="h2" x="989" y="330">Anuncio MANAGER</text>
+  <text class="small" x="961" y="358">ClientMessage a la raíz (ICCCM §2.8)</text>
+  <text class="small" x="961" y="377">con la hora, WM_S0 y la ventana.</text>
+  <text class="small" x="961" y="396">Después, adopción y bucle de eventos.</text>
+  <path class="flow" d="M1150 264 V282 H250 V298" fill="none" marker-end="url(#arrow)"/>
+  <text class="accent small" x="48" y="444">Ante cualquier incoherencia: código 12 (u 14) y solo se destruye la ventana propia, que libera WM_S0. Nunca borra, sustituye ni reemplaza lo de otro gestor.</text>
+
+  <!-- 2. Comunicación en ejecución -->
+  <rect class="frame" x="30" y="484" width="1340" height="640" rx="8"/>
+  <text class="h" x="48" y="514">2 · Comunicación en ejecución: todo pasa por el servidor X11</text>
+  <rect class="soft" x="45" y="530" width="380" height="44" rx="4"/>
+  <text class="h2" x="235" y="558" text-anchor="middle">Aplicaciones X11 y herramientas</text>
+  <rect class="soft" x="510" y="530" width="380" height="44" rx="4"/>
+  <text class="h2" x="700" y="558" text-anchor="middle">Servidor X11 (Xvfb :N aislado)</text>
+  <rect class="soft" x="975" y="530" width="380" height="44" rx="4"/>
+  <text class="h2" x="1165" y="558" text-anchor="middle">Crimson WM</text>
+  <line class="flow" x1="249" y1="614" x2="688" y2="614" marker-end="url(#arrow)"/>
+  <text class="label" x="468" y="605" text-anchor="middle">WM_PROTOCOLS · WM_HINTS (propiedades)</text>
+  <line class="flow" x1="712" y1="614" x2="1151" y2="614" marker-end="url(#arrow)"/>
+  <text class="label" x="931" y="605" text-anchor="middle">PropertyNotify: solo esas dos</text>
+  <line class="flow" x1="1151" y1="662" x2="249" y2="662" marker-end="url(#arrow)"/>
+  <text class="label" x="700" y="653" text-anchor="middle">WM_TAKE_FOCUS con marca real: la de la pulsación o la hora del servidor</text>
+  <line class="flow" x1="1151" y1="710" x2="249" y2="710" marker-end="url(#arrow)"/>
+  <text class="label" x="700" y="701" text-anchor="middle">WM_DELETE_WINDOW: Mod4+w y _NET_CLOSE_WINDOW, solo cierre cooperativo</text>
+  <line class="flow-red" x1="1151" y1="758" x2="712" y2="758" marker-end="url(#arrow-red)"/>
+  <text class="label accent" x="931" y="749" text-anchor="middle">KillClient: solo Mod4+Shift+w</text>
+  <line class="flow-red" x1="688" y1="758" x2="249" y2="758" stroke-dasharray="6 4" marker-end="url(#arrow-red)"/>
+  <text class="label accent" x="468" y="749" text-anchor="middle">cierra toda la conexión del cliente</text>
+  <line class="flow" x1="249" y1="806" x2="1151" y2="806" marker-end="url(#arrow)"/>
+  <text class="label" x="700" y="797" text-anchor="middle">Peticiones a la raíz: _NET_ACTIVE_WINDOW · _NET_CURRENT_DESKTOP · _NET_WM_DESKTOP · _NET_CLOSE_WINDOW</text>
+  <line class="flow" x1="1151" y1="854" x2="712" y2="854" marker-end="url(#arrow)"/>
+  <text class="label" x="931" y="845" text-anchor="middle">_NET_CLIENT_LIST · _NET_CLIENT_LIST_STACKING</text>
+  <line class="flow" x1="1151" y1="902" x2="712" y2="902" marker-end="url(#arrow)"/>
+  <text class="label" x="931" y="893" text-anchor="middle">_NET_ACTIVE_WINDOW · escritorios · WM_STATE</text>
+  <line class="flow-red" x1="712" y1="950" x2="1151" y2="950" marker-end="url(#arrow-red)"/>
+  <text class="label accent" x="931" y="941" text-anchor="middle">SelectionClear: otro toma WM_S0 → limpia lo propio y termina</text>
+  <rect class="box" x="45" y="986" width="380" height="122" rx="6"/>
+  <text class="h2" x="61" y="1012">Clientes de las pruebas</text>
+  <text class="small" x="61" y="1036">xev y test-client en un Xvfb aislado;</text>
+  <text class="small" x="61" y="1056">xdotool para las peticiones EWMH.</text>
+  <text class="small" x="61" y="1076">Nunca aplicaciones reales.</text>
+  <rect class="box" x="510" y="986" width="380" height="122" rx="6"/>
+  <text class="h2" x="526" y="1012">Raíz y selección</text>
+  <text class="small" x="526" y="1036">7 propiedades _NET_* del WM en la raíz;</text>
+  <text class="small" x="526" y="1056">WM_S0 → ventana de comprobación;</text>
+  <text class="small" x="526" y="1076">WM_STATE y _NET_WM_DESKTOP por ventana.</text>
+  <rect class="box" x="975" y="986" width="380" height="122" rx="6"/>
+  <text class="h2" x="991" y="1012">Módulos</text>
+  <text class="small" x="991" y="1036">wm.rs: E/S X11, identificación, Dirty, QueryTree</text>
+  <text class="small" x="991" y="1056">icccm.rs: WM_HINTS, WM_PROTOCOLS, mensajes</text>
+  <text class="small" x="991" y="1076">ewmh.rs: _NET_SUPPORTED y peticiones</text>
+
+  <!-- 3. Políticas y aplazado -->
+  <rect class="frame" x="30" y="1142" width="662" height="222" rx="8"/>
+  <text class="h" x="48" y="1172">3 · Políticas de las peticiones externas</text>
+  <text class="mono b" x="48" y="1202">_NET_ACTIVE_WINDOW</text>
+  <text class="small" x="250" y="1202">fuente 2 (paginador): cambia de escritorio y enfoca;</text>
+  <text class="small" x="250" y="1228">fuente 1 o 0 (aplicación): solo en el escritorio activo.</text>
+  <text class="mono b" x="48" y="1254">_NET_CURRENT_DESKTOP</text>
+  <text class="small" x="250" y="1254">índices 0 a 7; fuera de rango, rechazado.</text>
+  <text class="mono b" x="48" y="1280">_NET_WM_DESKTOP</text>
+  <text class="small" x="250" y="1280">mueve sin cambiar de escritorio; sticky, rechazado.</text>
+  <text class="mono b" x="48" y="1306">_NET_CLOSE_WINDOW</text>
+  <text class="small" x="250" y="1306">solo WM_DELETE_WINDOW; nunca KillClient.</text>
+  <text class="mono b" x="48" y="1332">Validación</text>
+  <text class="small" x="250" y="1332">formato 32, ventana gestionada y origen 0, 1 o 2.</text>
+  <rect class="deferred" x="708" y="1142" width="662" height="222" rx="8"/>
+  <text class="h muted" x="726" y="1172">Aplazado: no se declara en _NET_SUPPORTED</text>
+  <text class="small muted" x="726" y="1202">– _NET_WM_STATE y _NET_WM_STATE_FULLSCREEN (F7)</text>
+  <text class="small muted" x="726" y="1228">– _NET_FRAME_EXTENTS · decoraciones</text>
+  <text class="small muted" x="726" y="1254">– _NET_WORKAREA · _NET_WM_STRUT_PARTIAL (paneles)</text>
+  <text class="small muted" x="726" y="1280">– ventanas sticky · _NET_WM_PING · urgencia</text>
+  <text class="small muted" x="726" y="1306">– WM_TRANSIENT_FOR avanzado · reglas por WM_CLASS</text>
+  <text class="small muted" x="726" y="1332">– varios monitores (RandR) · IPC · configuración TOML</text>
+
+  <!-- 4. Salida -->
+  <rect class="guard" x="30" y="1382" width="1340" height="108" rx="8"/>
+  <text class="h accent" x="48" y="1412">4 · Salida</text>
+  <text class="small" x="48" y="1438">Mod4+Shift+Escape o SelectionClear: muestra las ventanas ocultas, borra las propiedades de la raíz solo si _NET_SUPPORTING_WM_CHECK sigue</text>
+  <text class="small" x="48" y="1458">apuntando a su ventana y destruye esa ventana, lo que libera WM_S0. SIGTERM o SIGKILL: la propiedad queda obsoleta y el siguiente arranque</text>
+  <text class="small" x="48" y="1478">se rechaza con el código 12 (fail-closed) hasta borrarla a mano en el servidor de prueba.</text>
+
+  <!-- Leyenda -->
+  <line class="flow" x1="48" y1="1522" x2="108" y2="1522" marker-end="url(#arrow)"/>
+  <text class="small" x="118" y="1527">implementado</text>
+  <line class="flow-red" x1="258" y1="1522" x2="318" y2="1522" marker-end="url(#arrow-red)"/>
+  <text class="small accent" x="328" y="1527">salvaguarda o acción forzada</text>
+  <rect class="deferred" x="578" y="1512" width="60" height="20" rx="3"/>
+  <text class="small muted" x="648" y="1527">aplazado (F7 o posterior)</text>
+  <text class="small muted" x="1370" y="1527" text-anchor="end">Fuente: src/wm.rs, src/icccm.rs, src/ewmh.rs, src/safeguards.rs</text>
+</svg>

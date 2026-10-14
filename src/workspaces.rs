@@ -20,12 +20,15 @@ pub struct Switch {
     pub to: usize,
 }
 
-/// Ventana enfocada llevada del escritorio activo a otro.
+/// Ventana llevada de un escritorio a otro.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Moved {
     pub window: Window,
     pub kind: Kind,
+    pub from: usize,
     pub to: usize,
+    /// Era la enfocada de su escritorio de origen.
+    pub was_focused: bool,
 }
 
 /// Invariantes:
@@ -39,6 +42,8 @@ pub struct Workspaces {
     desks: [Clients; COUNT],
     current: usize,
     previous: Option<usize>,
+    /// Siguiente número de orden de gestión (`Client::order`).
+    next_order: u64,
 }
 
 impl Workspaces {
@@ -70,10 +75,35 @@ impl Workspaces {
         self.desks.iter().find_map(|d| d.get(window))
     }
 
+    pub fn get_mut(&mut self, window: Window) -> Option<&mut Client> {
+        self.desks.iter_mut().find_map(|d| d.get_mut(window))
+    }
+
     /// Gestiona la ventana en el escritorio activo. Devuelve `false`, sin
     /// cambiar nada, si ya estaba gestionada en cualquier escritorio.
     pub fn manage(&mut self, window: Window, class: Class) -> bool {
-        self.locate(window).is_none() && self.current_mut().manage(window, class)
+        if self.locate(window).is_some() || !self.current_mut().manage(window, class) {
+            return false;
+        }
+        let order = self.next_order;
+        self.next_order += 1;
+        if let Some(client) = self.current_mut().get_mut(window) {
+            client.order = order;
+        }
+        true
+    }
+
+    /// Todas las ventanas gestionadas, de todos los escritorios, en el orden
+    /// en que empezaron a gestionarse (`_NET_CLIENT_LIST`).
+    pub fn client_list(&self) -> Vec<Window> {
+        let mut all: Vec<(u64, Window)> = self
+            .desks
+            .iter()
+            .flat_map(|d| d.windows().filter_map(|w| d.get(w)))
+            .map(|c| (c.order, c.window))
+            .collect();
+        all.sort_unstable();
+        all.into_iter().map(|(_, w)| w).collect()
     }
 
     /// Deja de gestionar la ventana, esté en el escritorio que esté, e
@@ -107,14 +137,30 @@ impl Workspaces {
     /// cambiar nada, si no hay ventana enfocada o `to` es el activo o está
     /// fuera de rango.
     pub fn move_focused(&mut self, to: usize) -> Option<Moved> {
-        if to >= COUNT || to == self.current {
+        let window = self.current().focused()?;
+        self.move_window(window, to, true)
+    }
+
+    /// Lleva una ventana de cualquier escritorio al final de `to`, sin
+    /// cambiar el escritorio activo (`_NET_WM_DESKTOP`, ADR 0008). Con
+    /// `focus`, pasa a ser la enfocada de `to`; si no, no entra en su
+    /// historial. `None`, sin cambiar nada, si no está gestionada o `to` es su
+    /// escritorio o está fuera de rango.
+    pub fn move_window(&mut self, window: Window, to: usize, focus: bool) -> Option<Moved> {
+        let from = self.locate(window)?;
+        if to >= COUNT || to == from {
             return None;
         }
-        let window = self.current().focused()?;
-        let (client, _) = self.current_mut().take(window)?;
+        let (client, was_focused) = self.desks[from].take(window)?;
         let kind = client.kind;
-        self.desks[to].adopt(client, true);
-        Some(Moved { window, kind, to })
+        self.desks[to].adopt(client, focus);
+        Some(Moved {
+            window,
+            kind,
+            from,
+            to,
+            was_focused,
+        })
     }
 
     #[cfg(test)]
@@ -122,6 +168,12 @@ impl Workspaces {
         assert!(self.current < COUNT);
         assert_ne!(self.previous, Some(self.current));
         assert!(self.previous.is_none_or(|p| p < COUNT));
+        let list = self.client_list();
+        let total: usize = self.desks.iter().map(|d| d.windows().count()).sum();
+        assert_eq!(list.len(), total, "_NET_CLIENT_LIST incompleta");
+        for (i, w) in list.iter().enumerate() {
+            assert!(!list[i + 1..].contains(w), "_NET_CLIENT_LIST repetida");
+        }
         for (i, desk) in self.desks.iter().enumerate() {
             desk.assert_consistent();
             for w in desk.windows() {
@@ -142,6 +194,7 @@ mod tests {
         kind: Kind::Tiled,
         focusable: true,
         input: InputModel::Passive,
+        delete_window: false,
     };
     const FLOATING: Class = Class {
         kind: Kind::Floating,
@@ -151,6 +204,7 @@ mod tests {
         kind: Kind::Floating,
         focusable: false,
         input: InputModel::Passive,
+        delete_window: false,
     };
 
     fn tiled(ws: &Workspaces, desk: usize) -> Vec<Window> {
@@ -252,7 +306,9 @@ mod tests {
             Some(Moved {
                 window: 2,
                 kind: Kind::Tiled,
-                to: 4
+                from: 0,
+                to: 4,
+                was_focused: true,
             })
         );
         // Sale del origen, que vuelve a la anterior del historial.
@@ -317,6 +373,65 @@ mod tests {
         ws.assert_consistent();
     }
 
+    #[test]
+    fn mover_cualquier_ventana() {
+        let mut ws = Workspaces::default();
+        ws.manage(1, TILED);
+        ws.manage(2, TILED);
+        ws.current_mut().focus(1);
+        ws.switch(3);
+        ws.manage(30, FLOATING);
+        ws.current_mut().focus(30);
+
+        // Desde un escritorio oculto a otro oculto, sin tocar el activo.
+        let moved = ws.move_window(1, 5, false).unwrap();
+        assert_eq!((moved.from, moved.to, moved.was_focused), (0, 5, true));
+        assert_eq!(ws.locate(1), Some(5));
+        assert_eq!(
+            ws.desk(5).unwrap().focused(),
+            None,
+            "sin foco en el destino"
+        );
+        assert_eq!(ws.desk(0).unwrap().fallback(), Some(2));
+        assert_eq!(ws.index(), 3);
+        assert_eq!(ws.current().focused(), Some(30));
+
+        // Hacia el escritorio activo.
+        let moved = ws.move_window(2, 3, false).unwrap();
+        assert_eq!((moved.from, moved.to, moved.was_focused), (0, 3, false));
+        assert_eq!(ws.current().windows().collect::<Vec<_>>(), vec![30, 2]);
+        assert_eq!(ws.current().focused(), Some(30));
+
+        assert_eq!(ws.move_window(2, 3, false), None, "mismo escritorio");
+        assert_eq!(ws.move_window(2, COUNT, false), None, "fuera de rango");
+        assert_eq!(ws.move_window(9, 1, false), None, "no gestionada");
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn lista_de_clientes_en_orden_de_gestion() {
+        let mut ws = Workspaces::default();
+        ws.manage(7, TILED);
+        ws.switch(2);
+        ws.manage(3, FLOATING);
+        ws.manage(5, TILED);
+        ws.switch(0);
+        ws.manage(1, PANEL);
+        assert_eq!(ws.client_list(), vec![7, 3, 5, 1]);
+        // Mover no cambia el orden; retirar quita la ventana; volver a
+        // gestionarla la pone al final.
+        ws.current_mut().focus(7);
+        ws.move_focused(6);
+        assert_eq!(ws.client_list(), vec![7, 3, 5, 1]);
+        ws.unmanage(3);
+        assert_eq!(ws.client_list(), vec![7, 5, 1]);
+        ws.manage(3, TILED);
+        assert_eq!(ws.client_list(), vec![7, 5, 1, 3]);
+        assert!(!ws.manage(5, TILED));
+        assert_eq!(ws.client_list(), vec![7, 5, 1, 3]);
+        ws.assert_consistent();
+    }
+
     /// Secuencia larga de operaciones pseudoaleatorias (generador
     /// congruencial con semilla fija): los invariantes se mantienen siempre.
     #[test]
@@ -367,6 +482,16 @@ mod tests {
                 }
                 7 => {
                     ws.current_mut().zoom();
+                }
+                8 if next(2) == 0 => {
+                    let from = ws.locate(window);
+                    match ws.move_window(window, desk, next(2) == 0) {
+                        Some(moved) => {
+                            assert_eq!(Some(moved.from), from);
+                            assert_eq!(ws.locate(window), Some(desk));
+                        }
+                        None => assert!(from.is_none() || from == Some(desk) || desk >= COUNT),
+                    }
                 }
                 _ => {
                     if let Some(w) = ws.current().neighbour(crate::clients::Direction::Next) {

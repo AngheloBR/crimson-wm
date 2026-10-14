@@ -10,6 +10,10 @@
   el WM ya desmapea ventanas para ocultarlas, distinguiendo sus desmapeos de
   las retiradas de los clientes (ADR 0007). Las secciones afectadas lo
   indican.
+- **Actualización F6 (2026-10-13):** el WM declara el soporte EWMH y
+  publica `_NET_CLIENT_LIST` y `_NET_CLIENT_LIST_STACKING`. Entre los tipos
+  de ventana solo declara los que tienen un tratamiento propio (normal,
+  diálogo, utilidad y barra de herramientas; ADR 0008).
 
 ## Contexto
 

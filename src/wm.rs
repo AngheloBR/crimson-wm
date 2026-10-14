@@ -11,15 +11,24 @@
 //! (`OwnUnmaps`). Todas las ventanas gestionadas están en el save-set del WM:
 //! si su conexión se cierra por cualquier motivo, el servidor vuelve a
 //! mapear las ocultas.
+//!
+//! ICCCM/EWMH (ADR 0008): el WM se identifica con una ventana de
+//! comprobación, la selección `WM_S{pantalla}` y `_NET_SUPPORTED`; cierra
+//! ventanas (`WM_DELETE_WINDOW`, `KillClient`), atiende las peticiones EWMH
+//! de activación, escritorios y cierre, sigue los cambios de `WM_HINTS` y
+//! `WM_PROTOCOLS` y publica `_NET_CLIENT_LIST(_STACKING)`.
+
+use std::collections::VecDeque;
 
 use x11rb::connection::{Connection, SequenceNumber};
-use x11rb::errors::ReplyError;
+use x11rb::errors::{ReplyError, ReplyOrIdError};
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureNotifyEvent,
-    ConfigureRequestEvent, ConfigureWindowAux, ConnectionExt as _, EventMask, FocusInEvent,
-    InputFocus, MapState, NotifyDetail, NotifyMode, PropMode, Screen, SetMode, StackMode,
-    Timestamp, UnmapNotifyEvent, Window,
+    Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureNotifyEvent,
+    ConfigureRequestEvent, ConfigureWindowAux, ConnectionExt as _, CreateWindowAux, EventMask,
+    FocusInEvent, InputFocus, MapState, NotifyDetail, NotifyMode, PropMode, PropertyNotifyEvent,
+    Screen, SelectionNotifyEvent, SelectionRequestEvent, SetMode, StackMode, Timestamp,
+    UnmapNotifyEvent, Window, WindowClass,
 };
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
@@ -27,8 +36,11 @@ use x11rb::{CURRENT_TIME, NONE};
 use crate::clients::{self, Class, Direction, InputModel, Kind, WindowInfo, WindowTypes};
 use crate::display::Target;
 use crate::error::Fatal;
+use crate::ewmh::{self, MessageTypes, Request, Source};
+use crate::icccm::{self, ICONIC_STATE, NORMAL_STATE, ProtocolAtoms, Protocols};
 use crate::keys::{self, Action, Repeats};
 use crate::layout::{self, Rect};
+use crate::safeguards;
 use crate::spawn::Launcher;
 use crate::workspaces::{self, Switch, Workspaces};
 
@@ -36,7 +48,16 @@ x11rb::atom_manager! {
     Atoms: AtomsCookie {
         WM_PROTOCOLS,
         WM_TAKE_FOCUS,
+        WM_DELETE_WINDOW,
         WM_STATE,
+        MANAGER,
+        UTF8_STRING,
+        _NET_SUPPORTED,
+        _NET_SUPPORTING_WM_CHECK,
+        _NET_WM_NAME,
+        _NET_CLIENT_LIST,
+        _NET_CLIENT_LIST_STACKING,
+        _NET_CLOSE_WINDOW,
         _NET_ACTIVE_WINDOW,
         _NET_NUMBER_OF_DESKTOPS,
         _NET_CURRENT_DESKTOP,
@@ -61,16 +82,9 @@ x11rb::atom_manager! {
 
 /// Máximo de tipos de `_NET_WM_WINDOW_TYPE` que se leen (unidades de 32 bits).
 const MAX_WINDOW_TYPES: u32 = 16;
-/// Máximo de protocolos de `WM_PROTOCOLS` que se leen.
-const MAX_PROTOCOLS: u32 = 32;
-/// Longitud de `WM_HINTS` en unidades de 32 bits (ICCCM §4.1.2.4).
-const WM_HINTS_LEN: u32 = 9;
 /// Valor especial de `SetInputFocus`: el foco sigue al puntero (el estado
 /// inicial del servidor).
 const POINTER_ROOT: Window = 1;
-/// Valores de `WM_STATE.state` (ICCCM §4.1.3.1).
-const NORMAL_STATE: u32 = 1;
-const ICONIC_STATE: u32 = 3;
 
 /// Se llama solo después de superar las capas 1 a 4 del ADR 0003: registrar
 /// los átomos los crea en el servidor, y un servidor rechazado no debe
@@ -81,11 +95,13 @@ const ICONIC_STATE: u32 = 3;
 pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(), Fatal> {
     let bindings = keys::grab_bindings(conn, screen.root)?;
     let launcher = Launcher::new(target);
-    let mut repeats = Repeats::default();
     let atoms = Atoms::new(conn)
         .map_err(Fatal::lost)?
         .reply()
         .map_err(|e| Fatal::startup("InternAtom", e))?;
+    let supported = intern_all(conn, ewmh::SUPPORTED)?;
+    let selection_name = safeguards::manager_selection(target.screen);
+    let selection = intern_all(conn, &[selection_name.as_str()])?[0];
 
     let mut wm = Wm {
         conn,
@@ -117,13 +133,43 @@ pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(
         workspaces: Workspaces::default(),
         unmaps: OwnUnmaps::default(),
         focus_request: 0,
+        identity: None,
+        pending: VecDeque::new(),
+        dirty: Dirty {
+            clients: true,
+            stacking: true,
+        },
     };
-    wm.adopt_existing()?;
-    wm.publish_desktops()?;
+    wm.identify(selection, &selection_name, &supported)?;
+    // Desde aquí el servidor tiene la identificación del WM: un error que
+    // no sea la pérdida de la conexión limpia antes lo propio.
+    let outcome = wm
+        .adopt_existing()
+        .and_then(|()| wm.publish_desktops())
+        .and_then(|()| event_loop(&mut wm, &bindings, &launcher));
+    match outcome {
+        Err(Fatal::ConnectionLost(_)) | Ok(()) => outcome,
+        Err(error) => {
+            if let Err(cleanup) = wm.release() {
+                eprintln!("crimson-wm: limpieza tras el error incompleta: {cleanup}");
+            }
+            Err(error)
+        }
+    }
+}
 
+/// Bucle de eventos. Termina con `Ok` tras el atajo de salida o al perder
+/// la selección del gestor, después de limpiar.
+fn event_loop<C: Connection>(
+    wm: &mut Wm<'_, C>,
+    bindings: &keys::Bindings,
+    launcher: &Launcher,
+) -> Result<(), Fatal> {
+    let mut repeats = Repeats::default();
     loop {
-        conn.flush().map_err(Fatal::lost)?;
-        let (event, sequence) = conn.wait_for_event_with_sequence().map_err(Fatal::lost)?;
+        wm.publish_dirty()?;
+        wm.conn.flush().map_err(Fatal::lost)?;
+        let (event, sequence) = wm.next_event()?;
         match event {
             Event::MapRequest(event) => wm.on_map_request(event.window)?,
             Event::ConfigureRequest(event) => wm.on_configure_request(&event)?,
@@ -167,11 +213,35 @@ pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(
                         wm.view_previous(event.time)?;
                     }
                 }
+                Some(Action::Close) => {
+                    if !repeats.autorepeat(&event) {
+                        if let Some(window) = wm.workspaces.current().focused() {
+                            wm.close(window, event.time, "Mod4+w")?;
+                        }
+                    }
+                }
+                Some(Action::Kill) => {
+                    if !repeats.autorepeat(&event) {
+                        wm.kill()?;
+                    }
+                }
                 None => {}
             },
             // Solo llegan las de las teclas capturadas, mientras dura la
             // captura activada por la pulsación.
             Event::KeyRelease(event) => repeats.released(&event),
+            Event::PropertyNotify(event) => wm.on_property_notify(&event)?,
+            // Peticiones EWMH: los clientes las envían a la raíz con
+            // SubstructureRedirect|SubstructureNotify.
+            Event::ClientMessage(event) => wm.on_client_message(&event)?,
+            Event::SelectionClear(event) if wm.owns_selection(event.selection, event.owner) => {
+                eprintln!(
+                    "crimson-wm: otro cliente ha tomado la selección del gestor (0x{:x}); se termina sin intentar recuperarla",
+                    event.owner
+                );
+                return wm.release();
+            }
+            Event::SelectionRequest(event) => wm.refuse_conversion(&event)?,
             // Las condiciones de carrera (BadWindow, etc.) no terminan el WM.
             Event::Error(error) => {
                 eprintln!(
@@ -182,6 +252,23 @@ pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(
             _ => {}
         }
     }
+}
+
+/// Ventana de comprobación EWMH, propietaria de la selección del gestor.
+#[derive(Clone, Copy, Debug)]
+struct Identity {
+    window: Window,
+    selection: Atom,
+}
+
+/// Propiedades de la raíz pendientes de publicar: se escriben una vez por
+/// tanda de eventos, antes de enviar las peticiones (`publish_dirty`).
+#[derive(Debug, Default)]
+struct Dirty {
+    /// `_NET_CLIENT_LIST`.
+    clients: bool,
+    /// `_NET_CLIENT_LIST_STACKING` (requiere un `QueryTree`).
+    stacking: bool,
 }
 
 struct Wm<'c, C: Connection> {
@@ -200,9 +287,332 @@ struct Wm<'c, C: Connection> {
     /// foco. Los `FocusIn` generados antes de que el servidor la procesara
     /// son anteriores a esa decisión y se ignoran.
     focus_request: SequenceNumber,
+    /// `None` hasta completar la identificación y si esta falla.
+    identity: Option<Identity>,
+    /// Eventos leídos mientras se esperaba la marca de tiempo del servidor
+    /// (`server_time`), que se atienden antes que los nuevos.
+    pending: VecDeque<(Event, SequenceNumber)>,
+    dirty: Dirty,
 }
 
 impl<C: Connection> Wm<'_, C> {
+    /// Siguiente evento: primero los que se leyeron mientras se esperaba una
+    /// marca de tiempo.
+    fn next_event(&mut self) -> Result<(Event, SequenceNumber), Fatal> {
+        match self.pending.pop_front() {
+            Some(event) => Ok(event),
+            None => self
+                .conn
+                .wait_for_event_with_sequence()
+                .map_err(Fatal::lost),
+        }
+    }
+
+    /// Identificación del WM (ADR 0008), después de las capas 1 a 4 del ADR
+    /// 0003, de capturar los atajos y de registrar los átomos:
+    /// 1. crea la ventana de comprobación (InputOnly, override-redirect, sin
+    ///    mapear) con `_NET_SUPPORTING_WM_CHECK` y `_NET_WM_NAME`;
+    /// 2. obtiene la hora del servidor (`server_time`);
+    /// 3. con el servidor capturado (`GrabServer`), para que ningún otro
+    ///    cliente se intercale: vuelve a comprobar que `WM_Sn` no tiene
+    ///    propietario y que la raíz no tiene `_NET_SUPPORTING_WM_CHECK`,
+    ///    adquiere la selección con esa hora, comprueba que es suya y solo
+    ///    entonces publica `_NET_SUPPORTING_WM_CHECK` y `_NET_SUPPORTED` en la
+    ///    raíz;
+    /// 4. anuncia `MANAGER` (ICCCM §2.8).
+    ///
+    /// Si algo no cuadra, se detiene con el código 12 (otro gestor) o 14 y
+    /// solo destruye su propia ventana, lo que libera la selección si llegó
+    /// a adquirirla. No toca propiedades ajenas ni reemplaza a otro gestor.
+    fn identify(
+        &mut self,
+        selection: Atom,
+        selection_name: &str,
+        supported: &[Atom],
+    ) -> Result<(), Fatal> {
+        let window = self.conn.generate_id().map_err(|e| match e {
+            ReplyOrIdError::ConnectionError(e) => Fatal::lost(e),
+            other => Fatal::Startup(format!(
+                "identificador de la ventana de comprobación: {other}"
+            )),
+        })?;
+        let aux = CreateWindowAux::new()
+            .override_redirect(1)
+            .event_mask(EventMask::PROPERTY_CHANGE);
+        self.conn
+            .create_window(
+                0,
+                window,
+                self.root,
+                -1,
+                -1,
+                1,
+                1,
+                0,
+                WindowClass::INPUT_ONLY,
+                0,
+                &aux,
+            )
+            .map_err(Fatal::lost)?
+            .check()
+            .map_err(|e| Fatal::startup("CreateWindow(comprobación)", e))?;
+        self.identity = Some(Identity { window, selection });
+        let outcome = self.claim(window, selection, selection_name, supported);
+        if outcome.is_err() {
+            self.identity = None;
+            // Solo lo propio: la ventana (y con ella la selección, si llegó
+            // a ser suya). Las propiedades de la raíz no se han escrito.
+            self.conn
+                .destroy_window(window)
+                .map_err(Fatal::lost)?
+                .ignore_error();
+            self.conn.flush().map_err(Fatal::lost)?;
+        }
+        outcome
+    }
+
+    fn claim(
+        &mut self,
+        window: Window,
+        selection: Atom,
+        selection_name: &str,
+        supported: &[Atom],
+    ) -> Result<(), Fatal> {
+        self.conn
+            .change_property32(
+                PropMode::REPLACE,
+                window,
+                self.atoms._NET_SUPPORTING_WM_CHECK,
+                AtomEnum::WINDOW,
+                &[window],
+            )
+            .map_err(Fatal::lost)?;
+        self.conn
+            .change_property8(
+                PropMode::REPLACE,
+                window,
+                self.atoms._NET_WM_NAME,
+                self.atoms.UTF8_STRING,
+                ewmh::WM_NAME.as_bytes(),
+            )
+            .map_err(Fatal::lost)?;
+        let time = self.server_time()?;
+
+        self.conn.grab_server().map_err(Fatal::lost)?;
+        let claimed = self.claim_grabbed(window, selection, selection_name, supported, time);
+        self.conn.ungrab_server().map_err(Fatal::lost)?;
+        claimed?;
+
+        let manager = ClientMessageEvent::new(
+            32,
+            self.root,
+            self.atoms.MANAGER,
+            [time, selection, window, 0, 0],
+        );
+        self.conn
+            .send_event(false, self.root, EventMask::STRUCTURE_NOTIFY, manager)
+            .map_err(Fatal::lost)?;
+        eprintln!(
+            "crimson-wm: identificación publicada: ventana de comprobación 0x{window:x}, selección {selection_name}, marca de tiempo {time}"
+        );
+        Ok(())
+    }
+
+    /// Paso 3 de `identify`, con el servidor capturado.
+    fn claim_grabbed(
+        &self,
+        window: Window,
+        selection: Atom,
+        selection_name: &str,
+        supported: &[Atom],
+        time: Timestamp,
+    ) -> Result<(), Fatal> {
+        let owner = self.selection_owner(selection)?;
+        if owner != NONE {
+            return Err(Fatal::OtherWm(format!(
+                "la selección {selection_name} ha pasado a tener propietario (0x{owner:x}) durante el arranque"
+            )));
+        }
+        if self.root_check()?.is_some() {
+            return Err(Fatal::OtherWm(
+                "la raíz ha recibido _NET_SUPPORTING_WM_CHECK durante el arranque".into(),
+            ));
+        }
+        self.conn
+            .set_selection_owner(window, selection, time)
+            .map_err(Fatal::lost)?;
+        let owner = self.selection_owner(selection)?;
+        if owner != window {
+            return Err(Fatal::OtherWm(format!(
+                "no se pudo adquirir la selección {selection_name} (propietario 0x{owner:x})"
+            )));
+        }
+        self.conn
+            .change_property32(
+                PropMode::REPLACE,
+                self.root,
+                self.atoms._NET_SUPPORTING_WM_CHECK,
+                AtomEnum::WINDOW,
+                &[window],
+            )
+            .map_err(Fatal::lost)?;
+        self.conn
+            .change_property32(
+                PropMode::REPLACE,
+                self.root,
+                self.atoms._NET_SUPPORTED,
+                AtomEnum::ATOM,
+                supported,
+            )
+            .map_err(Fatal::lost)?;
+        Ok(())
+    }
+
+    fn selection_owner(&self, selection: Atom) -> Result<Window, Fatal> {
+        Ok(self
+            .conn
+            .get_selection_owner(selection)
+            .map_err(Fatal::lost)?
+            .reply()
+            .map_err(|e| Fatal::startup("GetSelectionOwner", e))?
+            .owner)
+    }
+
+    /// Valor de `_NET_SUPPORTING_WM_CHECK` en la raíz: `None` si no existe;
+    /// `Some(None)` si existe con un valor no válido.
+    fn root_check(&self) -> Result<Option<Option<Window>>, Fatal> {
+        let reply = self
+            .conn
+            .get_property(
+                false,
+                self.root,
+                self.atoms._NET_SUPPORTING_WM_CHECK,
+                AtomEnum::ANY,
+                0,
+                1,
+            )
+            .map_err(Fatal::lost)?
+            .reply()
+            .map_err(|e| Fatal::startup("GetProperty(_NET_SUPPORTING_WM_CHECK)", e))?;
+        if reply.type_ == u32::from(AtomEnum::NONE) {
+            return Ok(None);
+        }
+        let value = reply
+            .value32()
+            .and_then(|mut v| v.next())
+            .filter(|_| reply.format == 32);
+        Ok(Some(value))
+    }
+
+    fn owns_selection(&self, selection: Atom, owner: Window) -> bool {
+        self.identity
+            .is_some_and(|i| i.selection == selection && i.window == owner)
+    }
+
+    /// Como propietario de la selección del gestor, el WM no ofrece ninguna
+    /// conversión: responde que no (propiedad None, ICCCM §2.2) para que el
+    /// solicitante no quede esperando.
+    fn refuse_conversion(&self, event: &SelectionRequestEvent) -> Result<(), Fatal> {
+        let notify = SelectionNotifyEvent {
+            response_type: x11rb::protocol::xproto::SELECTION_NOTIFY_EVENT,
+            sequence: 0,
+            time: event.time,
+            requestor: event.requestor,
+            selection: event.selection,
+            target: event.target,
+            property: NONE,
+        };
+        self.conn
+            .send_event(false, event.requestor, EventMask::NO_EVENT, notify)
+            .map_err(Fatal::lost)?
+            .ignore_error();
+        Ok(())
+    }
+
+    /// Hora actual del servidor: un `ChangeProperty` vacío (añadir cero
+    /// bytes) en la ventana de comprobación genera un `PropertyNotify` con
+    /// la marca de tiempo. Los eventos que llegan mientras tanto se guardan
+    /// en `pending`, en orden.
+    ///
+    /// Se usa donde ICCCM exige una marca de tiempo real y no hay evento que
+    /// la aporte: `SetSelectionOwner` y los mensajes `WM_TAKE_FOCUS` y
+    /// `WM_DELETE_WINDOW` que no vienen de una pulsación.
+    fn server_time(&mut self) -> Result<Timestamp, Fatal> {
+        let Some(identity) = self.identity else {
+            return Ok(CURRENT_TIME);
+        };
+        let request = self
+            .conn
+            .change_property8(
+                PropMode::APPEND,
+                identity.window,
+                self.atoms._NET_WM_NAME,
+                self.atoms.UTF8_STRING,
+                &[],
+            )
+            .map_err(Fatal::lost)?
+            .sequence_number();
+        self.conn.flush().map_err(Fatal::lost)?;
+        loop {
+            let (event, sequence) = self
+                .conn
+                .wait_for_event_with_sequence()
+                .map_err(Fatal::lost)?;
+            if let Event::PropertyNotify(notify) = &event {
+                if notify.window == identity.window
+                    && notify.atom == self.atoms._NET_WM_NAME
+                    && sequence >= request
+                {
+                    return Ok(notify.time);
+                }
+            }
+            self.pending.push_back((event, sequence));
+        }
+    }
+
+    /// Escribe las propiedades marcadas en `dirty`. `_NET_CLIENT_LIST_STACKING`
+    /// sale del orden real del servidor (`QueryTree`, de abajo arriba).
+    fn publish_dirty(&mut self) -> Result<(), Fatal> {
+        if std::mem::take(&mut self.dirty.clients) {
+            let list = self.workspaces.client_list();
+            self.conn
+                .change_property32(
+                    PropMode::REPLACE,
+                    self.root,
+                    self.atoms._NET_CLIENT_LIST,
+                    AtomEnum::WINDOW,
+                    &list,
+                )
+                .map_err(Fatal::lost)?;
+        }
+        if std::mem::take(&mut self.dirty.stacking) {
+            let tree = self
+                .conn
+                .query_tree(self.root)
+                .map_err(Fatal::lost)?
+                .reply();
+            let children = match tree {
+                Ok(tree) => tree.children,
+                Err(ReplyError::ConnectionError(e)) => return Err(Fatal::lost(e)),
+                Err(ReplyError::X11Error(e)) => {
+                    eprintln!("crimson-wm: QueryTree de la raíz: {:?}", e.error_kind);
+                    return Ok(());
+                }
+            };
+            let stacking = ewmh::stacking(&children, |w| self.workspaces.get(w).is_some());
+            self.conn
+                .change_property32(
+                    PropMode::REPLACE,
+                    self.root,
+                    self.atoms._NET_CLIENT_LIST_STACKING,
+                    AtomEnum::WINDOW,
+                    &stacking,
+                )
+                .map_err(Fatal::lost)?;
+        }
+        Ok(())
+    }
+
     /// Gestiona las ventanas que ya estaban mapeadas al arrancar y da el foco
     /// a la maestra (o a la primera que lo admita).
     fn adopt_existing(&mut self) -> Result<(), Fatal> {
@@ -290,6 +700,8 @@ impl<C: Connection> Wm<'_, C> {
                 self.conn
                     .configure_window(event.window, &aux)
                     .map_err(Fatal::lost)?;
+                // Puede haber cambiado el apilamiento.
+                self.dirty.stacking = true;
             }
         }
         Ok(())
@@ -340,6 +752,8 @@ impl<C: Connection> Wm<'_, C> {
             kind_name(removed.kind),
             desk + 1
         );
+        self.dirty.clients = true;
+        self.dirty.stacking = true;
         let active = desk == self.workspaces.index();
         if gone != Gone::Destroyed {
             // La ventana deja de ser del WM: si este termina, el servidor no
@@ -467,6 +881,7 @@ impl<C: Connection> Wm<'_, C> {
         for window in hidden {
             self.hide(window)?;
         }
+        self.dirty.stacking = true;
         self.publish_current_desktop()
     }
 
@@ -490,6 +905,196 @@ impl<C: Connection> Wm<'_, C> {
             self.arrange()?;
         }
         Ok(())
+    }
+
+    /// Petición `_NET_WM_DESKTOP`: lleva una ventana de cualquier escritorio
+    /// a otro sin cambiar el activo ni darle el foco. Si sale del activo, se
+    /// oculta (y el foco pasa a la siguiente del historial si la tenía); si
+    /// entra en él, se muestra.
+    fn move_window(&mut self, window: Window, desk: usize) -> Result<(), Fatal> {
+        let Some(moved) = self.workspaces.move_window(window, desk, false) else {
+            eprintln!(
+                "crimson-wm: _NET_WM_DESKTOP sin efecto: 0x{window:x} no está gestionada o ya está en el escritorio {}",
+                desk + 1
+            );
+            return Ok(());
+        };
+        eprintln!(
+            "crimson-wm: ventana 0x{window:x} llevada al escritorio {} (_NET_WM_DESKTOP)",
+            moved.to + 1
+        );
+        self.publish_desktop(window, moved.to)?;
+        let current = self.workspaces.index();
+        if moved.from == current {
+            if moved.was_focused {
+                self.set_focus(self.workspaces.current().fallback(), CURRENT_TIME)?;
+            }
+            self.hide(window)?;
+            if moved.kind == Kind::Tiled {
+                self.arrange()?;
+            }
+        } else if moved.to == current {
+            // Colocada antes de mapearla; las flotantes, encima.
+            self.arrange()?;
+            self.set_wm_state(window, NORMAL_STATE)?;
+            self.conn.map_window(window).map_err(Fatal::lost)?;
+        }
+        self.dirty.stacking = true;
+        Ok(())
+    }
+
+    /// `Mod4+w` y `_NET_CLOSE_WINDOW`: cierre cooperativo con
+    /// `WM_DELETE_WINDOW` (ICCCM §4.2.8.1). Si la ventana no anuncia el
+    /// protocolo, no se hace nada: una petición externa nunca termina un
+    /// cliente a la fuerza (ADR 0008).
+    fn close(&mut self, window: Window, time: Timestamp, origin: &str) -> Result<(), Fatal> {
+        let Some(client) = self.workspaces.get(window) else {
+            eprintln!("crimson-wm: {origin}: 0x{window:x} no está gestionada");
+            return Ok(());
+        };
+        if !client.delete_window {
+            eprintln!(
+                "crimson-wm: {origin}: 0x{window:x} no anuncia WM_DELETE_WINDOW; no se cierra"
+            );
+            return Ok(());
+        }
+        let time = if time == CURRENT_TIME {
+            self.server_time()?
+        } else {
+            time
+        };
+        let message = icccm::protocol_message(
+            window,
+            self.atoms.WM_PROTOCOLS,
+            self.atoms.WM_DELETE_WINDOW,
+            time,
+        );
+        self.conn
+            .send_event(false, window, EventMask::NO_EVENT, message)
+            .map_err(Fatal::lost)?;
+        eprintln!(
+            "crimson-wm: {origin}: WM_DELETE_WINDOW enviado a 0x{window:x} (marca de tiempo {time})"
+        );
+        Ok(())
+    }
+
+    /// `Mod4+Shift+w`: cierre forzado de la ventana enfocada, solo por
+    /// acción explícita del usuario. `KillClient` cierra la conexión X11 del
+    /// cliente: **todas** sus ventanas desaparecen, no solo esta.
+    fn kill(&mut self) -> Result<(), Fatal> {
+        let Some(window) = self.workspaces.current().focused() else {
+            return Ok(());
+        };
+        self.conn.kill_client(window).map_err(Fatal::lost)?;
+        eprintln!(
+            "crimson-wm: Mod4+Shift+w: cierre forzado de 0x{window:x} (KillClient: se cierran todas las ventanas de su conexión)"
+        );
+        Ok(())
+    }
+
+    /// `PropertyNotify` de `WM_HINTS` o `WM_PROTOCOLS` de una ventana
+    /// gestionada: se vuelven a leer ambas y se actualizan el modelo de
+    /// entrada y el soporte de `WM_DELETE_WINDOW`. Las demás propiedades
+    /// (también las que escribe el propio WM) se ignoran, así que no hay
+    /// bucles. El cambio se aplica en la siguiente decisión de foco.
+    fn on_property_notify(&mut self, event: &PropertyNotifyEvent) -> Result<(), Fatal> {
+        let relevant = [u32::from(AtomEnum::WM_HINTS), self.atoms.WM_PROTOCOLS];
+        if !relevant.contains(&event.atom) || self.workspaces.get(event.window).is_none() {
+            return Ok(());
+        }
+        let Some((input, protocols)) = self.read_input(event.window)? else {
+            return Ok(());
+        };
+        let model = InputModel::new(input, protocols.take_focus);
+        let Some(client) = self.workspaces.get_mut(event.window) else {
+            return Ok(());
+        };
+        if client.input != model || client.delete_window != protocols.delete_window {
+            client.input = model;
+            client.delete_window = protocols.delete_window;
+            eprintln!(
+                "crimson-wm: ventana 0x{:x}: modelo de entrada {model:?}, WM_DELETE_WINDOW {} (PropertyNotify)",
+                event.window,
+                if protocols.delete_window { "sí" } else { "no" }
+            );
+        }
+        Ok(())
+    }
+
+    /// Peticiones EWMH. Se validan (formato, origen, índices) antes de
+    /// actuar; las rechazadas se registran y se ignoran.
+    fn on_client_message(&mut self, event: &ClientMessageEvent) -> Result<(), Fatal> {
+        let types = MessageTypes {
+            active_window: self.atoms._NET_ACTIVE_WINDOW,
+            current_desktop: self.atoms._NET_CURRENT_DESKTOP,
+            wm_desktop: self.atoms._NET_WM_DESKTOP,
+            close_window: self.atoms._NET_CLOSE_WINDOW,
+        };
+        let decoded = ewmh::decode(
+            &types,
+            self.root,
+            event.type_,
+            event.format,
+            event.window,
+            event.data.as_data32(),
+        );
+        match decoded {
+            None => Ok(()),
+            Some(Err(invalid)) => {
+                eprintln!(
+                    "crimson-wm: petición EWMH rechazada para 0x{:x}: {invalid:?}",
+                    event.window
+                );
+                Ok(())
+            }
+            Some(Ok(Request::Activate { window, source })) => self.activate(window, source),
+            Some(Ok(Request::CurrentDesktop { desk })) => {
+                eprintln!("crimson-wm: _NET_CURRENT_DESKTOP: escritorio {}", desk + 1);
+                self.view(desk, CURRENT_TIME)
+            }
+            Some(Ok(Request::WindowDesktop { window, desk })) => self.move_window(window, desk),
+            Some(Ok(Request::Close {
+                window,
+                time,
+                source,
+            })) => self.close(window, time, &format!("_NET_CLOSE_WINDOW ({source:?})")),
+        }
+    }
+
+    /// `_NET_ACTIVE_WINDOW`: enfoca la ventana. Si está en otro escritorio,
+    /// solo un paginador o el usuario (fuente 2) pueden cambiar a él; una
+    /// aplicación, no (ADR 0008). La marca de tiempo del solicitante no se
+    /// usa: el WM enfoca con la suya.
+    fn activate(&mut self, window: Window, source: Source) -> Result<(), Fatal> {
+        let Some(desk) = self.workspaces.locate(window) else {
+            eprintln!("crimson-wm: _NET_ACTIVE_WINDOW ignorada: 0x{window:x} no está gestionada");
+            return Ok(());
+        };
+        if !self.workspaces.get(window).is_some_and(|c| c.focusable) {
+            eprintln!("crimson-wm: _NET_ACTIVE_WINDOW ignorada: 0x{window:x} no admite foco");
+            return Ok(());
+        }
+        if desk == self.workspaces.index() {
+            eprintln!("crimson-wm: _NET_ACTIVE_WINDOW ({source:?}): 0x{window:x}");
+            return self.set_focus(Some(window), CURRENT_TIME);
+        }
+        if !source.may_switch_desktop() {
+            eprintln!(
+                "crimson-wm: _NET_ACTIVE_WINDOW ({source:?}) ignorada: 0x{window:x} está en el escritorio {}",
+                desk + 1
+            );
+            return Ok(());
+        }
+        let Some(switch) = self.workspaces.switch(desk) else {
+            return Ok(());
+        };
+        eprintln!(
+            "crimson-wm: _NET_ACTIVE_WINDOW ({source:?}): 0x{window:x}, escritorio {}",
+            desk + 1
+        );
+        // Pasa a ser la más reciente de su escritorio: `show` la enfoca.
+        self.workspaces.current_mut().focus(window);
+        self.show(switch, CURRENT_TIME)
     }
 
     /// Oculta una ventana gestionada y anota el número de secuencia del
@@ -517,15 +1122,20 @@ impl<C: Connection> Wm<'_, C> {
             .map_err(Fatal::lost)?;
         self.set_wm_state(window, NORMAL_STATE)?;
         self.publish_desktop(window, desk)?;
+        // PropertyChange, para seguir WM_HINTS y WM_PROTOCOLS; FocusChange,
+        // para seguir los cambios de foco hechos por el cliente. No se
+        // retira la selección al dejar de gestionarla: la ventana puede
+        // haber sido destruida, y sus eventos se ignoran igualmente.
+        let mut mask = EventMask::PROPERTY_CHANGE;
         if class.focusable {
-            // Para seguir los cambios de foco hechos por el cliente. No se
-            // retira la selección al dejar de gestionarla: la ventana puede
-            // haber sido destruida, y sus eventos se ignoran igualmente.
-            let aux = ChangeWindowAttributesAux::new().event_mask(EventMask::FOCUS_CHANGE);
-            self.conn
-                .change_window_attributes(window, &aux)
-                .map_err(Fatal::lost)?;
+            mask |= EventMask::FOCUS_CHANGE;
         }
+        let aux = ChangeWindowAttributesAux::new().event_mask(mask);
+        self.conn
+            .change_window_attributes(window, &aux)
+            .map_err(Fatal::lost)?;
+        self.dirty.clients = true;
+        self.dirty.stacking = true;
         Ok(())
     }
 
@@ -535,6 +1145,13 @@ impl<C: Connection> Wm<'_, C> {
     ///
     /// Si la ventana acaba de desaparecer, el error X se registra como
     /// evento y su UnmapNotify o DestroyNotify vuelve a colocar el foco.
+    ///
+    /// `time` es la marca de la pulsación que lo provoca, o `CurrentTime` si
+    /// no hay ninguna (ventana nueva o retirada, peticiones EWMH). En ese caso
+    /// `SetInputFocus` sigue usando `CurrentTime`: el WM decide el foco y una
+    /// marca anterior al último cambio haría que el servidor lo ignorara.
+    /// Pero `WM_TAKE_FOCUS` siempre lleva una marca real (ICCCM §4.2.7), la
+    /// hora del servidor si hace falta.
     fn set_focus(&mut self, target: Option<Window>, time: Timestamp) -> Result<(), Fatal> {
         let target = target.and_then(|w| {
             self.workspaces
@@ -571,11 +1188,16 @@ impl<C: Connection> Wm<'_, C> {
             self.focus_request = cookie.sequence_number();
         }
         if input.takes_focus() {
-            let message = ClientMessageEvent::new(
-                32,
+            let time = if time == CURRENT_TIME {
+                self.server_time()?
+            } else {
+                time
+            };
+            let message = icccm::protocol_message(
                 window,
                 self.atoms.WM_PROTOCOLS,
-                [self.atoms.WM_TAKE_FOCUS, time, 0, 0, 0],
+                self.atoms.WM_TAKE_FOCUS,
+                time,
             );
             let cookie = self
                 .conn
@@ -588,8 +1210,6 @@ impl<C: Connection> Wm<'_, C> {
     }
 
     /// `_NET_ACTIVE_WINDOW` en la raíz (EWMH), con None si no hay ninguna.
-    /// Es compatibilidad parcial: el WM no declara soporte EWMH
-    /// (`_NET_SUPPORTED`, `_NET_SUPPORTING_WM_CHECK`).
     fn publish_active(&self, window: Window) -> Result<(), Fatal> {
         self.conn
             .change_property32(
@@ -603,8 +1223,8 @@ impl<C: Connection> Wm<'_, C> {
         Ok(())
     }
 
-    /// `_NET_NUMBER_OF_DESKTOPS` y `_NET_CURRENT_DESKTOP` en la raíz, como
-    /// información parcial: no se atienden los mensajes de cambio (ADR 0007).
+    /// `_NET_NUMBER_OF_DESKTOPS` y `_NET_CURRENT_DESKTOP` en la raíz (ADR 0007
+    /// y 0008).
     fn publish_desktops(&self) -> Result<(), Fatal> {
         let count = u32::try_from(workspaces::COUNT).unwrap_or(u32::MAX);
         self.conn
@@ -655,16 +1275,23 @@ impl<C: Connection> Wm<'_, C> {
                 window,
                 self.atoms.WM_STATE,
                 self.atoms.WM_STATE,
-                &[state, NONE],
+                &icccm::wm_state(state),
             )
             .map_err(Fatal::lost)?;
         Ok(())
     }
 
-    /// Al salir: muestra las ventanas ocultas de los demás escritorios (el
-    /// save-set lo haría igualmente al cerrarse la conexión, pero así quedan
-    /// en NormalState), borra las propiedades de la raíz y devuelve el foco
+    /// Al salir (atajo, pérdida de la selección del gestor o error tras la
+    /// identificación): muestra las ventanas ocultas de los demás
+    /// escritorios (el save-set lo haría igualmente al cerrarse la conexión,
+    /// pero así quedan en NormalState), limpia lo propio y devuelve el foco
     /// al puntero, el estado inicial del servidor.
+    ///
+    /// Solo borra las propiedades de la raíz si `_NET_SUPPORTING_WM_CHECK`
+    /// sigue apuntando a su ventana de comprobación: si otro gestor las ha
+    /// sustituido, son suyas. Después destruye esa ventana, lo que libera la
+    /// selección si aún es suya. `_NET_WM_DESKTOP` y `WM_STATE` se quedan en
+    /// las ventanas, como recomienda EWMH para un gestor posterior.
     ///
     /// Termina con una petición con respuesta: sin ella, el proceso podría
     /// salir antes de que el servidor procese las anteriores, y otro cliente
@@ -678,13 +1305,28 @@ impl<C: Connection> Wm<'_, C> {
             self.set_wm_state(window, NORMAL_STATE)?;
             self.conn.map_window(window).map_err(Fatal::lost)?;
         }
-        for property in [
-            self.atoms._NET_ACTIVE_WINDOW,
-            self.atoms._NET_CURRENT_DESKTOP,
-            self.atoms._NET_NUMBER_OF_DESKTOPS,
-        ] {
+        if let Some(identity) = self.identity {
+            if self.root_check()? == Some(Some(identity.window)) {
+                for property in [
+                    self.atoms._NET_SUPPORTING_WM_CHECK,
+                    self.atoms._NET_SUPPORTED,
+                    self.atoms._NET_CLIENT_LIST,
+                    self.atoms._NET_CLIENT_LIST_STACKING,
+                    self.atoms._NET_ACTIVE_WINDOW,
+                    self.atoms._NET_CURRENT_DESKTOP,
+                    self.atoms._NET_NUMBER_OF_DESKTOPS,
+                ] {
+                    self.conn
+                        .delete_property(self.root, property)
+                        .map_err(Fatal::lost)?;
+                }
+            } else {
+                eprintln!(
+                    "crimson-wm: la raíz ya no apunta a la ventana de comprobación; se conservan sus propiedades"
+                );
+            }
             self.conn
-                .delete_property(self.root, property)
+                .destroy_window(identity.window)
                 .map_err(Fatal::lost)?;
         }
         self.conn
@@ -722,6 +1364,7 @@ impl<C: Connection> Wm<'_, C> {
                 .configure_window(window, &raise)
                 .map_err(Fatal::lost)?;
         }
+        self.dirty.stacking = true;
         Ok(())
     }
 
@@ -743,8 +1386,16 @@ impl<C: Connection> Wm<'_, C> {
             AtomEnum::ATOM,
             MAX_WINDOW_TYPES,
         )?;
-        let hints = property(AtomEnum::WM_HINTS.into(), AtomEnum::WM_HINTS, WM_HINTS_LEN)?;
-        let protocols = property(self.atoms.WM_PROTOCOLS, AtomEnum::ATOM, MAX_PROTOCOLS)?;
+        let hints = property(
+            AtomEnum::WM_HINTS.into(),
+            AtomEnum::WM_HINTS,
+            icccm::WM_HINTS_LEN,
+        )?;
+        let protocols = property(
+            self.atoms.WM_PROTOCOLS,
+            AtomEnum::ATOM,
+            icccm::MAX_PROTOCOLS,
+        )?;
 
         let attributes = reply_or_gone(attributes.reply(), window, "GetWindowAttributes")?;
         let transient = reply_or_gone(transient.reply(), window, "GetProperty(WM_TRANSIENT_FOR)")?;
@@ -765,10 +1416,56 @@ impl<C: Connection> Wm<'_, C> {
             // ICCCM espera WINDOW, pero la regla permisiva es inocua.
             transient: transient.format == 32 && transient.value_len >= 1,
             types: values32(&types),
-            input: clients::input_hint(&values32(&hints)),
-            take_focus: values32(&protocols).contains(&self.atoms.WM_TAKE_FOCUS),
+            input: icccm::input_hint(&values32(&hints)),
+            protocols: Protocols::parse(&values32(&protocols), self.protocol_atoms()),
         };
         Ok(Some((info, attributes.map_state)))
+    }
+
+    /// `WM_HINTS.input` y `WM_PROTOCOLS`, leídos juntos. `None`: la ventana
+    /// ya no existe. Un valor mal formado cuenta como ausente.
+    fn read_input(&self, window: Window) -> Result<Option<(Option<bool>, Protocols)>, Fatal> {
+        let hints = self
+            .conn
+            .get_property(
+                false,
+                window,
+                AtomEnum::WM_HINTS,
+                AtomEnum::WM_HINTS,
+                0,
+                icccm::WM_HINTS_LEN,
+            )
+            .map_err(Fatal::lost)?;
+        let protocols = self
+            .conn
+            .get_property(
+                false,
+                window,
+                self.atoms.WM_PROTOCOLS,
+                AtomEnum::ATOM,
+                0,
+                icccm::MAX_PROTOCOLS,
+            )
+            .map_err(Fatal::lost)?;
+        let hints = reply_or_gone(hints.reply(), window, "GetProperty(WM_HINTS)")?;
+        let protocols = reply_or_gone(protocols.reply(), window, "GetProperty(WM_PROTOCOLS)")?;
+        let (Some(hints), Some(protocols)) = (hints, protocols) else {
+            return Ok(None);
+        };
+        let values32 = |reply: &x11rb::protocol::xproto::GetPropertyReply| -> Vec<u32> {
+            reply.value32().map(Iterator::collect).unwrap_or_default()
+        };
+        Ok(Some((
+            icccm::input_hint(&values32(&hints)),
+            Protocols::parse(&values32(&protocols), self.protocol_atoms()),
+        )))
+    }
+
+    fn protocol_atoms(&self) -> ProtocolAtoms {
+        ProtocolAtoms {
+            delete_window: self.atoms.WM_DELETE_WINDOW,
+            take_focus: self.atoms.WM_TAKE_FOCUS,
+        }
     }
 
     fn window_types(&self) -> WindowTypes<'_> {
@@ -778,6 +1475,26 @@ impl<C: Connection> Wm<'_, C> {
             unfocusable: &self.unfocusable_types,
         }
     }
+}
+
+/// Registra los átomos de `names`, con todas las peticiones enviadas juntas.
+fn intern_all(conn: &impl Connection, names: &[&str]) -> Result<Vec<Atom>, Fatal> {
+    let cookies = names
+        .iter()
+        .map(|name| {
+            conn.intern_atom(false, name.as_bytes())
+                .map_err(Fatal::lost)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    cookies
+        .into_iter()
+        .map(|cookie| {
+            cookie
+                .reply()
+                .map(|reply| reply.atom)
+                .map_err(|e| Fatal::startup("InternAtom", e))
+        })
+        .collect()
 }
 
 /// Respuesta de una petición sobre una ventana que pudo desaparecer entre
@@ -1008,21 +1725,5 @@ mod tests {
         own.push(0xa, 0x2_0005);
         assert!(!own.is_own(0xa, 0x3_0005, false));
         assert!(own.pending.is_empty());
-    }
-
-    #[test]
-    fn mensaje_wm_take_focus() {
-        // ICCCM §4.2.8: tipo WM_PROTOCOLS, formato 32, data[0] = WM_TAKE_FOCUS
-        // y data[1] = marca de tiempo.
-        let (protocols, take_focus, time) = (301, 302, 123_456);
-        let message =
-            ClientMessageEvent::new(32, 0x40_0003, protocols, [take_focus, time, 0, 0, 0]);
-        let bytes: [u8; 32] = message.into();
-        assert_eq!(bytes[0], 33, "ClientMessage");
-        assert_eq!(bytes[1], 32, "formato");
-        let word = |i: usize| u32::from_ne_bytes(bytes[i..i + 4].try_into().unwrap());
-        assert_eq!(word(4), 0x40_0003, "ventana");
-        assert_eq!(word(8), protocols, "tipo");
-        assert_eq!((word(12), word(16)), (take_focus, time));
     }
 }

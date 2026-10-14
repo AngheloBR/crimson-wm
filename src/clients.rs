@@ -4,6 +4,7 @@
 
 use x11rb::protocol::xproto::{Atom, Window};
 
+use crate::icccm::Protocols;
 use crate::layout::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,17 +54,6 @@ impl InputModel {
     }
 }
 
-/// Campo `input` de `WM_HINTS` (valores de 32 bits): solo cuenta si la
-/// bandera `InputHint` está activa. Una propiedad incompleta se trata como
-/// ausente.
-pub fn input_hint(wm_hints: &[u32]) -> Option<bool> {
-    const INPUT_HINT: u32 = 1;
-    match wm_hints {
-        [flags, input, ..] if flags & INPUT_HINT != 0 => Some(*input != 0),
-        _ => None,
-    }
-}
-
 /// Cómo se gestiona una ventana.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Class {
@@ -71,6 +61,8 @@ pub struct Class {
     /// Puede recibir el foco y entra en la navegación por teclado.
     pub focusable: bool,
     pub input: InputModel,
+    /// Anuncia `WM_DELETE_WINDOW`: admite el cierre cooperativo (ADR 0008).
+    pub delete_window: bool,
 }
 
 #[derive(Debug)]
@@ -78,9 +70,15 @@ pub struct Client {
     pub window: Window,
     pub kind: Kind,
     pub focusable: bool,
+    /// Modelo de entrada y soporte de `WM_DELETE_WINDOW`: se actualizan si
+    /// cambian `WM_HINTS` o `WM_PROTOCOLS` (`PropertyNotify`, ADR 0008).
     pub input: InputModel,
+    pub delete_window: bool,
     /// Última geometría asignada por el WM (solo en mosaico).
     pub geometry: Option<Rect>,
+    /// Orden de gestión en todos los escritorios, para `_NET_CLIENT_LIST`
+    /// (lo asigna `Workspaces`).
+    pub order: u64,
 }
 
 /// Resultado de dejar de gestionar una ventana.
@@ -147,7 +145,9 @@ impl Clients {
             kind: class.kind,
             focusable: class.focusable,
             input: class.input,
+            delete_window: class.delete_window,
             geometry: None,
+            order: 0,
         });
         true
     }
@@ -189,6 +189,10 @@ impl Clients {
 
     pub fn get(&self, window: Window) -> Option<&Client> {
         self.list.iter().find(|c| c.window == window)
+    }
+
+    pub fn get_mut(&mut self, window: Window) -> Option<&mut Client> {
+        self.list.iter_mut().find(|c| c.window == window)
     }
 
     /// Todas las ventanas, en orden de llegada.
@@ -328,8 +332,8 @@ pub struct WindowInfo {
     pub types: Vec<Atom>,
     /// Campo `input` de `WM_HINTS`, si está presente.
     pub input: Option<bool>,
-    /// `WM_PROTOCOLS` contiene `WM_TAKE_FOCUS`.
-    pub take_focus: bool,
+    /// Protocolos de `WM_PROTOCOLS` que usa el WM.
+    pub protocols: Protocols,
 }
 
 /// Átomos de `_NET_WM_WINDOW_TYPE` que reconoce la clasificación.
@@ -372,7 +376,8 @@ pub fn classify(info: &WindowInfo, types: &WindowTypes) -> Option<Class> {
     Some(Class {
         kind,
         focusable,
-        input: InputModel::new(info.input, info.take_focus),
+        input: InputModel::new(info.input, info.protocols.take_focus),
+        delete_window: info.protocols.delete_window,
     })
 }
 
@@ -394,6 +399,7 @@ mod tests {
         kind: Kind::Tiled,
         focusable: true,
         input: InputModel::Passive,
+        delete_window: false,
     };
     const FLOATING: Class = Class {
         kind: Kind::Floating,
@@ -403,6 +409,7 @@ mod tests {
         kind: Kind::Floating,
         focusable: false,
         input: InputModel::Passive,
+        delete_window: false,
     };
 
     fn rect(width: u16) -> Rect {
@@ -636,18 +643,6 @@ mod tests {
         assert!(!InputModel::NoInput.sets_input_focus() && !InputModel::NoInput.takes_focus());
     }
 
-    #[test]
-    fn campo_input_de_wm_hints() {
-        assert_eq!(input_hint(&[1, 1, 0, 0, 0, 0, 0, 0, 0]), Some(true));
-        assert_eq!(input_hint(&[1, 0]), Some(false));
-        assert_eq!(input_hint(&[3, 0]), Some(false));
-        // Sin la bandera InputHint el campo no cuenta.
-        assert_eq!(input_hint(&[2, 0, 1]), None);
-        // Propiedad ausente o incompleta.
-        assert_eq!(input_hint(&[]), None);
-        assert_eq!(input_hint(&[1]), None);
-    }
-
     fn info(override_redirect: bool, transient: bool, types: &[Atom]) -> WindowInfo {
         WindowInfo {
             override_redirect,
@@ -688,5 +683,16 @@ mod tests {
             classify(&no_input, &TYPES).map(|c| c.input),
             Some(InputModel::NoInput)
         );
+        // WM_PROTOCOLS: modelo de entrada y cierre cooperativo.
+        let protocols = WindowInfo {
+            protocols: Protocols {
+                delete_window: true,
+                take_focus: true,
+            },
+            ..WindowInfo::default()
+        };
+        let class = classify(&protocols, &TYPES).unwrap();
+        assert_eq!(class.input, InputModel::LocallyActive);
+        assert!(class.delete_window);
     }
 }

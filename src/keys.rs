@@ -1,7 +1,7 @@
-//! Atajos de teclado (ADR 0005, 0006 y 0007): una tabla fija capturada en
-//! la raíz, también con Bloq Mayús y Bloq Num activos. Incluye el atajo
+//! Atajos de teclado (ADR 0005 a 0008): una tabla fija capturada en la
+//! raíz, también con Bloq Mayús y Bloq Num activos. Incluye el atajo
 //! provisional de salida `Mod4+Shift+Escape` (ADR 0003), los de lanzamiento
-//! de aplicaciones y los de escritorios.
+//! de aplicaciones, los de escritorios y los de cierre de ventanas.
 
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
@@ -22,6 +22,7 @@ const XK_E: Keysym = 0x0065;
 const XK_J: Keysym = 0x006a;
 const XK_K: Keysym = 0x006b;
 const XK_N: Keysym = 0x006e;
+const XK_W: Keysym = 0x0077;
 const XK_NUM_LOCK: Keysym = 0xff7f;
 const XK_TAB: Keysym = 0xff09;
 /// Dígitos `1` a `8`, en orden.
@@ -56,6 +57,11 @@ pub enum Action {
     MoveTo(usize),
     /// Vuelve al escritorio anterior.
     ViewPrevious,
+    /// Pide a la ventana enfocada que se cierre (`WM_DELETE_WINDOW`).
+    Close,
+    /// Cierra a la fuerza la conexión del cliente de la ventana enfocada
+    /// (`KillClient`): todas sus ventanas.
+    Kill,
 }
 
 struct Binding {
@@ -175,17 +181,28 @@ const BINDINGS: &[Binding] = &[
         name: "Mod4+Tab",
         action: Action::ViewPrevious,
     },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_W,
+        name: "Mod4+w",
+        action: Action::Close,
+    },
+    Binding {
+        modifiers: MOD4 | SHIFT,
+        keysym: XK_W,
+        name: "Mod4+Shift+w",
+        action: Action::Kill,
+    },
 ];
 
 /// Combinaciones reservadas para fases posteriores (ADR 0005). No se
 /// capturan: hasta entonces llegan a la ventana enfocada. Solo las usan las
-/// pruebas, para comprobar que la tabla no las ocupa.
+/// pruebas, para comprobar que la tabla no las ocupa. `Mod4+w` y
+/// `Mod4+Shift+w` se implementaron en F6 (ADR 0008).
 #[cfg(test)]
 const RESERVED: &[(u16, Keysym)] = &[
-    (MOD4, 0x0068),         // h: foco a la izquierda.
-    (MOD4, 0x006c),         // l: foco a la derecha.
-    (MOD4, 0x0077),         // w: cerrar la ventana.
-    (MOD4 | SHIFT, 0x0077), // Shift+w: forzar el cierre.
+    (MOD4, 0x0068), // h: foco a la izquierda.
+    (MOD4, 0x006c), // l: foco a la derecha.
 ];
 
 /// Atajos capturados: código de tecla, modificadores exactos y acción.
@@ -317,8 +334,9 @@ const REPEAT_INTERVAL: Timestamp = 300;
 ///   dan la vuelta cada 2^32 ms).
 ///
 /// Los atajos de escritorio que no son idempotentes (mover la ventana y
-/// volver al anterior) solo ignoran la repetición automática: mantener
-/// `Mod4+Shift+n` no debe llevarse una ventana tras otra.
+/// volver al anterior) y los de cierre solo ignoran la repetición
+/// automática: mantener `Mod4+Shift+n` o `Mod4+w` no debe llevarse o cerrar
+/// una ventana tras otra.
 #[derive(Default)]
 pub struct Repeats {
     /// Última liberación de una tecla capturada: código y marca de tiempo.
@@ -452,7 +470,8 @@ mod tests {
 
     /// Tabla como la que produce `grab_bindings` con el mapa por defecto de
     /// Xvfb: Escape = 9, Return = 36, j = 44, k = 45, d = 40, e = 26,
-    /// b = 56, n = 57, Print = 107 y 218, 1 a 8 = 10 a 17 y Tab = 23.
+    /// b = 56, n = 57, Print = 107 y 218, 1 a 8 = 10 a 17, Tab = 23 y
+    /// w = 25.
     fn bindings(num_lock: u16) -> Bindings {
         let mut keys = vec![
             (9, MOD4 | SHIFT, Action::Exit),
@@ -467,6 +486,8 @@ mod tests {
             (107, 0, Action::Launch(spawn::SCREENSHOT)),
             (218, 0, Action::Launch(spawn::SCREENSHOT)),
             (23, MOD4, Action::ViewPrevious),
+            (25, MOD4, Action::Close),
+            (25, MOD4 | SHIFT, Action::Kill),
         ];
         for (index, keycode) in (10..=17).enumerate() {
             keys.push((keycode, MOD4, Action::View(index)));
@@ -692,6 +713,38 @@ mod tests {
         assert_eq!((previous[0].modifiers, previous[0].keysym), (MOD4, XK_TAB));
         // Todos son obligatorios (código 14 si no se pueden capturar).
         assert!(desks.iter().all(|b| b.required()));
+    }
+
+    // U15: cierre.
+
+    #[test]
+    fn atajos_de_cierre() {
+        let b = bindings(NUM_LOCK_MOD2);
+        let m4 = KeyButMask::MOD4;
+        assert_eq!(b.action_for(25, m4), Some(Action::Close));
+        assert_eq!(b.action_for(25, m4 | KeyButMask::SHIFT), Some(Action::Kill));
+        for extra in [KeyButMask::LOCK, KeyButMask::MOD2] {
+            assert_eq!(b.action_for(25, m4 | extra), Some(Action::Close));
+            assert_eq!(
+                b.action_for(25, m4 | KeyButMask::SHIFT | extra),
+                Some(Action::Kill)
+            );
+        }
+        assert_eq!(b.action_for(25, KeyButMask::from(0u16)), None);
+        assert_eq!(b.action_for(25, m4 | KeyButMask::CONTROL), None);
+        let find = |action| BINDINGS.iter().find(|b| b.action == action).unwrap();
+        let close = find(Action::Close);
+        assert_eq!(
+            (close.modifiers, close.keysym, close.name),
+            (MOD4, XK_W, "Mod4+w")
+        );
+        let kill = find(Action::Kill);
+        assert_eq!(
+            (kill.modifiers, kill.keysym, kill.name),
+            (MOD4 | SHIFT, XK_W, "Mod4+Shift+w")
+        );
+        // Atajos de control: obligatorios.
+        assert!(close.required() && kill.required());
     }
 
     #[test]

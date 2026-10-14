@@ -10,6 +10,8 @@
   (`Mod4+Shift+n` y `Mod4+Tab`), sin el intervalo de 300 ms (ADR 0007). Los
   programas lanzados no se ven afectados por los cambios de escritorio, y su
   ventana aparece en el escritorio activo al mapearse.
+- **Actualización F6 (2026-10-13):** `Repeats` filtra también la
+  repetición automática de `Mod4+w` y `Mod4+Shift+w` (ADR 0008).
 
 ## Contexto
 

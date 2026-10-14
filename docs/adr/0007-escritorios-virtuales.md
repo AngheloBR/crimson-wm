@@ -5,6 +5,13 @@
   parcial por el mismo motivo que A9 (ver «Resultados de las pruebas de
   aceptación de F5»).
 - **Fecha:** 2026-10-13
+- **Actualización F6 (2026-10-13):** el soporte EWMH pasa a estar
+  declarado (`_NET_SUPPORTING_WM_CHECK`, `_NET_SUPPORTED`) y se atienden las
+  peticiones `_NET_CURRENT_DESKTOP` y `_NET_WM_DESKTOP` (ADR 0008). En A41,
+  `A41-ewmh-parcial` pasa a ser `A41-ewmh-declarado`. En A51, el reinicio
+  tras SIGTERM comprueba primero el rechazo por la propiedad obsoleta
+  (`A51-tras-sigterm`) y el arnés la borra antes de seguir. Las secciones
+  afectadas lo indican.
 
 ## Contexto
 
@@ -199,7 +206,8 @@ Al dejar de gestionar una ventana se registra el motivo:
   `_NET_SUPPORTING_WM_CHECK` (la capa 3 del ADR 0003 no cambia), y no se
   atienden los `ClientMessage` de cambio de escritorio de los pagers.
   Herramientas como `xdotool get_desktop`, que exigen `_NET_SUPPORTED`, no
-  lo leen.
+  lo leen. *Resuelto en F6 (ADR 0008): soporte declarado y peticiones
+  atendidas.*
 
 ### Salvaguardas y procesos
 
@@ -361,7 +369,8 @@ comprobación. Como siempre, el `xvfb-run` de A8 termina con 1 (ADR 0003).
   Xephyr dentro de la sesión real, sxhkd probablemente tendría ya esas
   combinaciones; en Xvfb no afecta.
 - **EWMH:** sin `_NET_SUPPORTED`, los pagers y `xdotool get_desktop` no lo
-  leen, y los mensajes de cambio de escritorio se ignoran.
+  leen, y los mensajes de cambio de escritorio se ignoran. *Resuelto en F6
+  (ADR 0008).*
 - **Un monitor**, como en F2.
 
 ## Alternativas consideradas

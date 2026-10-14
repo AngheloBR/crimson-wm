@@ -23,6 +23,21 @@
   `_NET_SUPPORTING_WM_CHECK` y pone cada ventana gestionada en su save-set:
   si el WM termina por cualquier motivo, el servidor vuelve a mapear las
   ventanas que tenía ocultas. Las capas no cambian.
+- **Actualización F6 (2026-10-13):** la capa 3 se amplía sin relajarse
+  (ADR 0008). Sigue rechazando cualquier `_NET_SUPPORTING_WM_CHECK`
+  previa, aunque sea obsoleta; el mensaje indica, solo como diagnóstico, si
+  la ventana a la que apunta existe. Además rechaza (código 12) si la
+  selección `WM_S{pantalla}` de ICCCM §2.8 tiene propietario, sin crear el
+  átomo. Solo después de las cuatro capas, de los atajos y de los átomos, el
+  WM crea su ventana de comprobación y, con el servidor capturado
+  (`GrabServer`), vuelve a comprobar ambas condiciones, adquiere `WM_S0` y
+  publica `_NET_SUPPORTING_WM_CHECK` y `_NET_SUPPORTED`. Al salir solo borra
+  las propiedades de la raíz si siguen apuntando a su ventana. Tras SIGTERM
+  o SIGKILL la propiedad queda obsoleta y el siguiente arranque en ese
+  servidor se rechaza (fail-closed) hasta borrarla a mano: el WM nunca la
+  elimina por su cuenta. La segunda instancia de A6 se detiene ahora en la
+  capa 3; la capa 4 (`BadAccess`) se prueba en A54 con un cliente que solo
+  toma `SubstructureRedirect`.
 
 ## Contexto
 
@@ -89,7 +104,7 @@ validación y la conexión no interpreten `DISPLAY` de forma distinta:
   pantallas que lista la respuesta de conexión
   (`x11rb-0.14.0/src/rust_connection/mod.rs:245-248`) y, si no existe,
   devuelve `InvalidScreen`; `src/connect.rs` (líneas 53-56) lo convierte en
-  el código 14. `src/main.rs` (líneas 61-64) repite la comprobación, con el
+  el código 14. `src/main.rs` (líneas 63-66) repite la comprobación, con el
   mismo código. Ninguna prueba de aceptación ha usado todavía una pantalla
   inexistente.
 - El parser acepta ceros a la izquierda y el signo `+` (`:05` y `:+5` dan
@@ -117,7 +132,7 @@ cookie registrada no se puede usar, y nunca se recurrirá a `-ac`.
 La propiedad `_CRIMSON_SANDBOX` de la ventana raíz debe coincidir con la
 variable de entorno `CRIMSON_SANDBOX_TOKEN`. Solo los scripts de prueba
 crean esa marca, con un valor aleatorio generado con `mcookie`. La variable
-se comprueba antes de abrir la conexión (`src/main.rs`, línea 57).
+se comprueba antes de abrir la conexión (`src/main.rs`, línea 59).
 
 - La propiedad debe ser de tipo `STRING` y formato 8, y su contenido debe
   coincidir byte a byte con el valor de la variable (por ejemplo,
@@ -163,7 +178,7 @@ No es una capa de protección, sino información de diagnóstico. El WM
 registra a qué servidor se ha conectado (display, fabricante, release, ID
 de la raíz y tamaño de pantalla; verificado en A7). Los registros no
 vuelcan el entorno: el WM solo lee `DISPLAY` y `CRIMSON_SANDBOX_TOKEN`
-(`src/main.rs`, líneas 56-57), y desde F4 `HOME`, como directorio de
+(`src/main.rs`, líneas 58-59), y desde F4 `HOME`, como directorio de
 trabajo de los programas que lanza (ADR 0006). Nunca imprime el valor del
 token.
 
@@ -265,7 +280,7 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
 
 - **Errores X durante la ejecución:** los debidos a condiciones de carrera
   (`BadWindow`, `BadDrawable`, etc.) llegan como eventos de error; el WM los
-  registra y no termina (`src/wm.rs`, líneas 176-181). Desde F2, un error
+  registra y no termina (`src/wm.rs`, líneas 246-251). Desde F2, un error
   X en una consulta con respuesta sobre una ventana (por ejemplo,
   `GetWindowAttributes` de una ventana ya destruida) se registra y la
   ventana no se gestiona (ADR 0004). Solo la pérdida de la conexión lo
