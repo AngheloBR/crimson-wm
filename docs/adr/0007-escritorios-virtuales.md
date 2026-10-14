@@ -16,6 +16,12 @@
   ventana a pantalla completa; el estado viaja con la ventana al moverla y
   la última gana en el destino (ADR 0009). La salida normal restaura antes
   las geometrías de todas ellas.
+- **Actualización F8 (2026-10-14):** un diálogo nuevo va al escritorio de
+  su principal, oculto si no es el activo y sin cambiar el escritorio ni el
+  foco. Mover una ventana (`Mod4+Shift+n` o `_NET_WM_DESKTOP`) se lleva sus
+  dependientes del mismo escritorio (ADR 0010). *Las limitaciones y la
+  alternativa aplazada sobre los diálogos, citadas abajo, están
+  resueltas.*
 
 ## Contexto
 

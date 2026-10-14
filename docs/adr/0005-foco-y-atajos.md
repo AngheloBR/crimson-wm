@@ -23,6 +23,10 @@
   pantalla completa. Cada decisión de foco recoloca en la pila la ventana a
   pantalla completa del escritorio: arriba si tiene el foco y al fondo si
   no (ADR 0009).
+- **Actualización F8 (2026-10-14):** al cerrarse un diálogo enfocado, el
+  foco vuelve a su propietario efectivo si sigue en el mismo escritorio y
+  admite foco; si no, al historial, como antes. Un diálogo que se gestiona
+  oculto en otro escritorio no recibe el foco (ADR 0010).
 
 ## Contexto
 

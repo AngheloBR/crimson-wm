@@ -10,6 +10,11 @@
   peticiones `_NET_WM_STATE` sobre FULLSCREEN (ADR 0009). El renderizador
   `ctypes` descrito abajo es ahora `tools/render-svg.py`. *La pantalla
   completa, citada como aplazada, está resuelta.*
+- **Actualización F8 (2026-10-14):** `WM_TRANSIENT_FOR` se interpreta y se
+  sigue con `PropertyNotify` (sin reclasificar la ventana), y se lee
+  `WM_NORMAL_HINTS` para respetar `USPosition` y `PPosition` (ADR 0010).
+  `_NET_SUPPORTED` no cambia. *El «`WM_TRANSIENT_FOR` avanzado» citado como
+  aplazado está resuelto, salvo los grupos y `_NET_WM_STATE_MODAL`.*
 
 ![Diagrama de F6: arranque e identificación, mensajes ICCCM y EWMH entre las aplicaciones, el servidor X11 y Crimson WM, políticas de las peticiones externas, salida y funciones aplazadas](../images/crimson-wm-f6-icccm-ewmh.png)
 

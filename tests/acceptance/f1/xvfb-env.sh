@@ -18,6 +18,15 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# Recursos propios (ADR 0010, F8-B.1): el Xvfb que lanzó este xvfb-run, su
+# display y la cookie, dentro del directorio temporal de xvfb-run. Con esta
+# lista, session_checks (lib.sh) distingue los residuos del arnés de los de
+# otros Xvfb del sistema. Solo lee /proc y se anota antes de las guardas,
+# para que un caso abortado también quede atribuido; los valores se validan
+# al usarlos.
+printf '%s\t%s\t%s\t%s\t%s\n' "$CASE" "$PPID" "$(pgrep -P "$PPID" -x Xvfb | paste -sd,)" \
+    "${DISPLAY:-}" "${XAUTHORITY:-}" >>"$OUT/xvfb-propios.tsv"
+
 # Guardas: solo se continúa dentro del Xvfb de este xvfb-run, con su cookie
 # temporal, sin TCP y sin -ac. Si algo no encaja, no se conecta nada.
 if ! [[ ${DISPLAY:-} =~ ^:[1-9][0-9]*$ ]]; then

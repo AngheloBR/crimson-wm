@@ -1,6 +1,7 @@
-//! ICCCM (ADR 0008): interpretación de `WM_HINTS` y `WM_PROTOCOLS`, mensajes
-//! `WM_PROTOCOLS` (`WM_DELETE_WINDOW` y `WM_TAKE_FOCUS`) y valor de
-//! `WM_STATE`. Sin E/S: `wm.rs` lee las propiedades y envía los mensajes.
+//! ICCCM (ADR 0008 y 0010): interpretación de `WM_HINTS`, `WM_PROTOCOLS`,
+//! `WM_TRANSIENT_FOR` y `WM_NORMAL_HINTS`, mensajes `WM_PROTOCOLS`
+//! (`WM_DELETE_WINDOW` y `WM_TAKE_FOCUS`) y valor de `WM_STATE`. Sin E/S:
+//! `wm.rs` lee las propiedades y envía los mensajes.
 
 use x11rb::NONE;
 use x11rb::protocol::xproto::{Atom, ClientMessageEvent, Timestamp, Window};
@@ -62,6 +63,56 @@ pub fn protocol_message(
     time: Timestamp,
 ) -> ClientMessageEvent {
     ClientMessageEvent::new(32, window, wm_protocols, [protocol, time, 0, 0, 0])
+}
+
+/// Valor de `WM_TRANSIENT_FOR` (ICCCM §4.1.2.6), ya interpretado.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransientFor {
+    /// Sin la propiedad, con un valor mal formado o 0.
+    None,
+    /// La raíz: transitoria de grupo. Los grupos (`WM_HINTS.window_group`)
+    /// no se implementan, así que no tiene propietario (ADR 0010).
+    Root,
+    /// La propia ventana: inválido.
+    Itself,
+    /// Otra ventana: el propietario declarado.
+    Window(Window),
+}
+
+impl TransientFor {
+    /// A partir de los valores de 32 bits de la propiedad (cualquier tipo,
+    /// como en la clasificación; vacío si falta o el formato no es 32).
+    pub fn parse(values: &[u32], window: Window, root: Window) -> Self {
+        match values.first().copied() {
+            None | Some(0) => TransientFor::None,
+            Some(v) if v == root => TransientFor::Root,
+            Some(v) if v == window => TransientFor::Itself,
+            Some(v) => TransientFor::Window(v),
+        }
+    }
+
+    /// El propietario declarado válido, si lo hay.
+    pub fn owner(self) -> Option<Window> {
+        match self {
+            TransientFor::Window(w) => Some(w),
+            _ => None,
+        }
+    }
+}
+
+/// Longitud de `WM_NORMAL_HINTS` (`WM_SIZE_HINTS`) en unidades de 32 bits.
+pub const WM_NORMAL_HINTS_LEN: u32 = 18;
+
+/// `WM_NORMAL_HINTS` pide una posición explícita (`USPosition`, dada por el
+/// usuario, o `PPosition`, por el programa; ICCCM §4.1.2.3): el WM la
+/// respeta y no centra la ventana. Una propiedad ausente o incompleta no
+/// pide nada.
+pub fn explicit_position(normal_hints: &[u32]) -> bool {
+    const US_POSITION: u32 = 1;
+    const P_POSITION: u32 = 1 << 2;
+    normal_hints
+        .first()
+        .is_some_and(|flags| flags & (US_POSITION | P_POSITION) != 0)
 }
 
 /// Valor de `WM_STATE`: estado y ventana de icono (ninguna).
@@ -134,6 +185,41 @@ mod tests {
             assert_eq!((word(12), word(16)), (protocol, time));
             assert_eq!((word(20), word(24), word(28)), (0, 0, 0));
         }
+    }
+
+    // U19: WM_TRANSIENT_FOR y WM_NORMAL_HINTS.
+
+    #[test]
+    fn interpreta_wm_transient_for() {
+        let (window, root) = (0x40_0001, 0x1ff);
+        assert_eq!(TransientFor::parse(&[], window, root), TransientFor::None);
+        assert_eq!(TransientFor::parse(&[0], window, root), TransientFor::None);
+        assert_eq!(
+            TransientFor::parse(&[root], window, root),
+            TransientFor::Root
+        );
+        assert_eq!(
+            TransientFor::parse(&[window], window, root),
+            TransientFor::Itself
+        );
+        assert_eq!(
+            TransientFor::parse(&[0x60_0001, 7], window, root),
+            TransientFor::Window(0x60_0001)
+        );
+        assert_eq!(TransientFor::Window(9).owner(), Some(9));
+        for invalid in [TransientFor::None, TransientFor::Root, TransientFor::Itself] {
+            assert_eq!(invalid.owner(), None);
+        }
+    }
+
+    #[test]
+    fn posicion_explicita() {
+        assert!(!explicit_position(&[]), "ausente");
+        assert!(!explicit_position(&[0, 10, 20]));
+        assert!(explicit_position(&[1]), "USPosition");
+        assert!(explicit_position(&[4]), "PPosition");
+        assert!(!explicit_position(&[2 | 8]), "solo tamaños (USSize, PSize)");
+        assert!(explicit_position(&[1 | 2 | 0x200]));
     }
 
     #[test]

@@ -63,6 +63,9 @@ pub struct Class {
     pub input: InputModel,
     /// Anuncia `WM_DELETE_WINDOW`: admite el cierre cooperativo (ADR 0008).
     pub delete_window: bool,
+    /// Propietario declarado en `WM_TRANSIENT_FOR`, ya validado (ni 0, ni
+    /// la raíz, ni la propia ventana; ADR 0010).
+    pub transient_for: Option<Window>,
 }
 
 #[derive(Debug)]
@@ -83,6 +86,11 @@ pub struct Client {
     /// Orden de gestión en todos los escritorios, para `_NET_CLIENT_LIST`
     /// (lo asigna `Workspaces`).
     pub order: u64,
+    /// Propietario declarado (`WM_TRANSIENT_FOR`, ADR 0010). Solo es un
+    /// dato declarado: el propietario efectivo se resuelve al usarlo
+    /// (`Workspaces::owner_of`), así que nunca queda una referencia colgante
+    /// si el propietario desaparece. Se actualiza con `PropertyNotify`.
+    pub transient_for: Option<Window>,
 }
 
 /// Geometría completa de una ventana: rectángulo y borde.
@@ -194,6 +202,7 @@ impl Clients {
             geometry: None,
             fullscreen: None,
             order: 0,
+            transient_for: class.transient_for,
         });
         true
     }
@@ -401,8 +410,11 @@ impl Clients {
 #[derive(Debug, Default)]
 pub struct WindowInfo {
     pub override_redirect: bool,
-    /// Tiene la propiedad `WM_TRANSIENT_FOR` (diálogo de otra ventana).
+    /// Tiene la propiedad `WM_TRANSIENT_FOR` (diálogo de otra ventana), con
+    /// cualquier valor: decide la clasificación.
     pub transient: bool,
+    /// Propietario declarado válido de `WM_TRANSIENT_FOR` (ADR 0010).
+    pub owner: Option<Window>,
     /// Valores de `_NET_WM_WINDOW_TYPE`, en orden de preferencia.
     pub types: Vec<Atom>,
     /// Campo `input` de `WM_HINTS`, si está presente.
@@ -456,6 +468,7 @@ pub fn classify(info: &WindowInfo, types: &WindowTypes) -> Option<Class> {
         focusable,
         input: InputModel::new(info.input, info.protocols.take_focus),
         delete_window: info.protocols.delete_window,
+        transient_for: info.owner,
     })
 }
 
@@ -478,6 +491,7 @@ mod tests {
         focusable: true,
         input: InputModel::Passive,
         delete_window: false,
+        transient_for: None,
     };
     const FLOATING: Class = Class {
         kind: Kind::Floating,
@@ -488,6 +502,7 @@ mod tests {
         focusable: false,
         input: InputModel::Passive,
         delete_window: false,
+        transient_for: None,
     };
 
     fn rect(width: u16) -> Rect {

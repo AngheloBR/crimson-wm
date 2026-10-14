@@ -310,7 +310,7 @@ A38)
     record A38-doble-pulsacion 1 "$got" "$(ok_if test "$got" = 1)" "dos pulsaciones seguidas de Mod4+Return (xdotool, 12 ms)"
     key super+Return
     verdict=FALLA
-    wait_for test "$(count kitty)" = 2 && verdict=OK
+    wait_for output_is 2 count kitty && verdict=OK
     record A38-pasado-el-intervalo 2 "$(count kitty)" "$verdict" "tercera pulsación, 0,5 s después"
     sleep 0.4
     xdotool keydown super+Return

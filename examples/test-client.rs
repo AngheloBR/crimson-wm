@@ -1,5 +1,5 @@
-//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F7 (ADR 0007 a
-//! 0009). Genera lo que las herramientas instaladas no pueden: el
+//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F8 (ADR 0007 a
+//! 0010). Genera lo que las herramientas instaladas no pueden: el
 //! `UnmapNotify` sintético de ICCCM §4.1.4, mensajes EWMH arbitrarios, la
 //! propiedad de una selección y una ventana que registra los mensajes
 //! `WM_PROTOCOLS` que recibe. No forma parte del WM: solo lo ejecutan los
@@ -23,7 +23,12 @@
 //!   o «real», con x, y, ancho y alto). Con `WM_DELETE_WINDOW` destruye sus
 //!   ventanas y termina. `--pair` crea otra ventana, NOMBRE-2, en la misma
 //!   conexión. Antes de mapearla: `--fullscreen` y `--state` ponen átomos en
-//!   `_NET_WM_STATE`, y `--dialog`, el tipo diálogo.
+//!   `_NET_WM_STATE`, y `--dialog`, el tipo diálogo. Desde F8:
+//!   `--transient-for VENTANA|root|self` pone `WM_TRANSIENT_FOR`;
+//!   `--position-hint us|p`, `WM_NORMAL_HINTS` con `USPosition` o
+//!   `PPosition`; `--background RRGGBB`, el color de fondo (visual
+//!   TrueColor de 24 bits, como el de Xvfb), y `--map-delay MS` espera
+//!   antes de mapearla.
 //!
 //! Solo se conecta a un DISPLAY de la forma `:N` con N distinto de 0.
 
@@ -201,6 +206,10 @@ fn client_window(
     let mut dialog = false;
     let mut geometry: (i16, i16, u16, u16) = (0, 0, 200, 100);
     let mut border: u16 = 0;
+    let mut transient_for: Option<String> = None;
+    let mut position_hint: Option<u32> = None;
+    let mut background: Option<u32> = None;
+    let mut map_delay = 0u64;
     let mut rest = options.iter();
     let mut next =
         |what: &str| -> Res<String> { Ok(rest.next().ok_or(format!("falta {what}"))?.to_string()) };
@@ -223,6 +232,16 @@ fn client_window(
                 )
             }
             "--border" => border = next("N")?.parse()?,
+            "--transient-for" => transient_for = Some(next("VENTANA")?),
+            "--position-hint" => {
+                position_hint = Some(match next("us|p")?.as_str() {
+                    "us" => 1,
+                    "p" => 1 << 2,
+                    other => return Err(format!("pista desconocida: {other}").into()),
+                })
+            }
+            "--background" => background = Some(u32::from_str_radix(&next("RRGGBB")?, 16)?),
+            "--map-delay" => map_delay = next("MS")?.parse()?,
             other => return Err(format!("opción desconocida: {other}").into()),
         }
     }
@@ -264,7 +283,7 @@ fn client_window(
             WindowClass::INPUT_OUTPUT,
             visual,
             &CreateWindowAux::new()
-                .background_pixel(conn.setup().roots[screen].white_pixel)
+                .background_pixel(background.unwrap_or(conn.setup().roots[screen].white_pixel))
                 .event_mask(EventMask::STRUCTURE_NOTIFY),
         )?;
         conn.change_property8(
@@ -298,6 +317,41 @@ fn client_window(
                 AtomEnum::ATOM,
                 &[dialog_type],
             )?;
+        }
+        if let Some(owner) = &transient_for {
+            let owner = match owner.as_str() {
+                "root" => root,
+                "self" => window,
+                other => parse_window(other).ok_or("VENTANA debe ser un identificador")?,
+            };
+            conn.change_property32(
+                PropMode::REPLACE,
+                window,
+                AtomEnum::WM_TRANSIENT_FOR,
+                AtomEnum::WINDOW,
+                &[owner],
+            )?;
+        }
+        if let Some(flags) = position_hint {
+            // WM_SIZE_HINTS: 18 valores; flags, x, y, ancho y alto.
+            let mut hints = [0u32; 18];
+            hints[0] = flags;
+            hints[1] = u32::try_from(geometry.0).unwrap_or(0);
+            hints[2] = u32::try_from(geometry.1).unwrap_or(0);
+            hints[3] = u32::from(geometry.2);
+            hints[4] = u32::from(geometry.3);
+            conn.change_property32(
+                PropMode::REPLACE,
+                window,
+                AtomEnum::WM_NORMAL_HINTS,
+                AtomEnum::WM_SIZE_HINTS,
+                &hints,
+            )?;
+        }
+        if map_delay > 0 {
+            sync(conn)?;
+            say(&format!("creada 0x{window:x}"));
+            std::thread::sleep(Duration::from_millis(map_delay));
         }
         conn.map_window(window)?;
         windows.push(window);

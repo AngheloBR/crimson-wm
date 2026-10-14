@@ -71,6 +71,16 @@ wait_for() {
     return 1
 }
 
+# output_is valor orden...: la salida de la orden (sin los saltos de línea
+# finales) es exactamente el valor. Con wait_for, la orden se vuelve a
+# ejecutar en cada intento; `wait_for test "$(orden)" = valor` evaluaría la
+# sustitución una sola vez, antes de esperar (ADR 0010, F8-B.2).
+output_is() {
+    local want=$1
+    shift
+    [[ $("$@") == "$want" ]]
+}
+
 # Comprobaciones sobre la sesión principal y el entorno (A9 en F1). Solo
 # lecturas que no conectan con ningún servidor X. Requieren OUT y TMP; WATCH
 # lista los procesos de la sesión que deben conservar su PID.
@@ -88,7 +98,7 @@ snapshot() {
 # session_checks prefijo: compara las instantáneas «antes» y «despues» y
 # busca pánicos en los registros de OUT.
 session_checks() {
-    local p before after verdict panics panic_logs s new
+    local p before after verdict panics panic_logs s
     for p in $WATCH; do
         before=$(paste -sd, "$OUT/$p.antes")
         after=$(paste -sd, "$OUT/$p.despues")
@@ -105,11 +115,143 @@ session_checks() {
     verdict=FALLA
     [[ $panics == 0 && $panic_logs == 0 ]] && verdict=OK
     record "$1-sin-panico" 0 "$panics códigos 101, $panic_logs registros con «panicked at»" "$verdict" "$(wc -l <"$CODES") ejecuciones del binario"
+    load_own
     for s in xvfb locks sockets xvfb-run-tmp; do
-        new=$(comm -13 "$OUT/$s.antes" "$OUT/$s.despues" | paste -sd' ')
-        verdict=FALLA
-        [[ -z $new ]] && verdict=OK
-        record "$1-sin-residuos-$s" "ninguno nuevo" "${new:-ninguno}" "$verdict" "antes y después: $(paste -sd' ' "$OUT/$s.despues")"
+        residue_check "$1" "$s"
     done
     record "$1-xprop-:0" "sin cambios" "-" OMITIDA "omitida deliberadamente: no se consulta la sesión X11 real"
+}
+
+# Residuos de Xvfb (ADR 0010, F8-B.1). Las instantáneas ven todos los Xvfb
+# del sistema, también los de otros programas que arrancan o terminan
+# durante la batería. Por eso cada recurso se atribuye con la lista de
+# recursos propios que anota xvfb-env.sh (un Xvfb por xvfb-run):
+# - Residuo propio, siempre FALLA: un Xvfb propio vivo (mismo PID y su
+#   cookie en -auth, contra la reutilización de PID); el lock de un display
+#   propio con el PID de un Xvfb propio; el socket de un display propio,
+#   salvo que su lock lo tenga ya un servidor ajeno; o el directorio
+#   temporal de un xvfb-run propio. Se comprueban todos, sean nuevos o no.
+# - Recurso nuevo ajeno (OK, se registra): no es de ningún Xvfb propio.
+#   Solo se acepta si la lista está completa: una anotación válida por cada
+#   xvfb-run. Si no, cualquier recurso nuevo es FALLA (sin atribuir).
+OWN_LIST=$OUT/xvfb-propios.tsv
+OWN_PIDS=()
+OWN_DISPLAYS=()
+OWN_DIRS=()
+OWN_COMPLETE=0
+OWN_SUMMARY=
+load_own() {
+    local case_id parent pid display auth valid=0 runs
+    OWN_PIDS=() OWN_DISPLAYS=() OWN_DIRS=()
+    if [[ -f $OWN_LIST ]]; then
+        # shellcheck disable=SC2034 # case_id y parent solo documentan la línea
+        while IFS=$'\t' read -r case_id parent pid display auth; do
+            [[ $pid =~ ^[0-9]+$ && $auth == */xvfb-run.*/Xauthority ]] || continue
+            [[ $display =~ ^:([1-9][0-9]*)$ ]] || continue
+            OWN_PIDS+=("$pid")
+            OWN_DISPLAYS+=("${BASH_REMATCH[1]}")
+            OWN_DIRS+=("${auth%/Xauthority}")
+            valid=$((valid + 1))
+        done <"$OWN_LIST"
+    fi
+    runs=$(grep -c ' xvfb-run exit: ' "$RUNS")
+    OWN_COMPLETE=0
+    ((valid == runs)) && OWN_COMPLETE=1
+    OWN_SUMMARY="$valid Xvfb propios anotados de $runs xvfb-run"
+}
+
+# in_list valor elementos...: el valor es uno de los elementos.
+in_list() {
+    local want=$1 item
+    shift
+    for item; do [[ $item == "$want" ]] && return 0; done
+    return 1
+}
+
+# lock_pid fichero: PID que Xvfb escribe en su lock; falla si no se puede
+# leer o no es un número.
+lock_pid() {
+    local value
+    value=$(tr -d ' \n' 2>/dev/null <"$1") || return 1
+    [[ $value =~ ^[0-9]+$ ]] && echo "$value"
+}
+
+# own_alive pid directorio: el proceso es el Xvfb propio de ese xvfb-run.
+own_alive() {
+    local args=()
+    mapfile -d '' args 2>/dev/null <"/proc/$1/cmdline" || return 1
+    [[ ${args[0]:-} == Xvfb ]] && in_list "$2/Xauthority" "${args[@]}"
+}
+
+# foreign_lock display: su lock existe y es de un servidor ajeno.
+foreign_lock() {
+    local pid
+    pid=$(lock_pid "/tmp/.X$1-lock") && ! in_list "$pid" "${OWN_PIDS[@]}"
+}
+
+# own_left tipo: residuos propios que siguen presentes, uno por línea.
+own_left() {
+    local i n pid
+    for i in "${!OWN_PIDS[@]}"; do
+        n=${OWN_DISPLAYS[i]}
+        case $1 in
+        xvfb) own_alive "${OWN_PIDS[i]}" "${OWN_DIRS[i]}" && echo "${OWN_PIDS[i]}" ;;
+        locks) pid=$(lock_pid "/tmp/.X$n-lock") && in_list "$pid" "${OWN_PIDS[@]}" && echo "/tmp/.X$n-lock" ;;
+        sockets) [[ -e /tmp/.X11-unix/X$n || -L /tmp/.X11-unix/X$n ]] && ! foreign_lock "$n" && echo "/tmp/.X11-unix/X$n" ;;
+        xvfb-run-tmp) [[ -e ${OWN_DIRS[i]} ]] && echo "${OWN_DIRS[i]}" ;;
+        esac
+    done | sort -u
+}
+no_own_left() { [[ -z $(own_left "$1") ]]; }
+
+# attribute tipo recurso: «propio», «ya no existe», «ajeno (…)» o «sin
+# atribuir» para un recurso que no estaba en la primera instantánea.
+attribute() {
+    local type=$1 item=$2 n pid args=()
+    case $type in
+    xvfb)
+        in_list "$item" "${OWN_PIDS[@]}" && { echo propio; return; }
+        mapfile -d '' args 2>/dev/null <"/proc/$item/cmdline" || { echo "ya no existe"; return; }
+        ((OWN_COMPLETE)) && { echo "ajeno (pid $item, ${args[1]:-?})"; return; }
+        ;;
+    locks)
+        [[ -e $item ]] || { echo "ya no existe"; return; }
+        if pid=$(lock_pid "$item"); then
+            in_list "$pid" "${OWN_PIDS[@]}" && { echo propio; return; }
+            ((OWN_COMPLETE)) && { echo "ajeno (pid $pid)"; return; }
+        fi
+        ;;
+    sockets)
+        [[ -e $item || -L $item ]] || { echo "ya no existe"; return; }
+        n=${item##*/X}
+        in_list "$n" "${OWN_DISPLAYS[@]}" && ! foreign_lock "$n" && { echo propio; return; }
+        ((OWN_COMPLETE)) && { echo "ajeno (display :$n)"; return; }
+        ;;
+    xvfb-run-tmp)
+        [[ -e $item ]] || { echo "ya no existe"; return; }
+        in_list "$item" "${OWN_DIRS[@]}" && { echo propio; return; }
+        ((OWN_COMPLETE)) && { echo "ajeno"; return; }
+        ;;
+    esac
+    echo "sin atribuir"
+}
+
+# residue_check prefijo tipo: registra prefijo-sin-residuos-tipo.
+residue_check() {
+    local id=$1-sin-residuos-$2 type=$2 left item what foreign=() unattributed=() verdict=FALLA
+    # xvfb-run no espera a que su Xvfb termine: se le dan hasta 5 s.
+    wait_for no_own_left "$type"
+    left=$(own_left "$type" | paste -sd' ')
+    while read -r item; do
+        [[ -n $item ]] || continue
+        what=$(attribute "$type" "$item")
+        case $what in
+        propio | "ya no existe") ;;
+        "sin atribuir") unattributed+=("$item") ;;
+        *) foreign+=("$item $what") ;;
+        esac
+    done < <(comm -13 "$OUT/$type.antes" "$OUT/$type.despues")
+    [[ -z $left && ${#unattributed[@]} == 0 ]] && verdict=OK
+    record "$id" "ningún residuo propio" "${left:-ninguno propio}${unattributed[*]:+; sin atribuir: ${unattributed[*]}}" "$verdict" \
+        "$OWN_SUMMARY; nuevos ajenos: $(IFS=,; echo "${foreign[*]:-ninguno}"); después: $(paste -sd' ' "$OUT/$type.despues")"
 }

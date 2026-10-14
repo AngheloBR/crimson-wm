@@ -8,6 +8,10 @@
 - **Corrección F7-B.1 (2026-10-14):** `_NET_WM_STATE` se lee entera y se
   actualiza de forma atómica; desaparece el límite de 64 átomos (ver
   «Lectura y escritura completas de `_NET_WM_STATE`»).
+- **Actualización F8 (2026-10-14):** `restack_fullscreen` cuenta la
+  familia: si el foco lo tiene un diálogo de la ventana a pantalla
+  completa, esta sigue arriba con sus diálogos encima, y solo baja al
+  fondo cuando se enfoca una ventana ajena (ADR 0010).
 
 ![Captura real en Xvfb: tres ventanas xlogo en master-stack; la segunda a pantalla completa con Mod4+f; y de nuevo la disposición original, idéntica píxel a píxel](../images/crimson-wm-f7-comparison.png)
 

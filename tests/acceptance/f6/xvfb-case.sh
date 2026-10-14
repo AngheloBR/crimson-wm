@@ -321,7 +321,7 @@ A54)
     record A54-wm-s0-intacta "propietario $taken; sin comprobación en la raíz" "WM_S0: $(owner); raíz -> $(check_of -root)" "$verdict" "test-client owner y xprop tras el rechazo"
     kill "$OWNER_PID" 2>/dev/null
     wait "$OWNER_PID" 2>/dev/null
-    precondition "WM_S0 libre" wait_for test "$(owner)" = ninguno
+    precondition "WM_S0 libre" wait_for output_is ninguno owner
     # d) La capa 4 sigue rechazando a quien tenga SubstructureRedirect sin
     # anunciarse.
     "$TEST_CLIENT" redirect 20 >"$OUT/$CASE-redirect.out" 2>&1 &
@@ -471,7 +471,7 @@ A58)
     unset 'PIDS[B]'
     expect_list A58-cierre-oculta _NET_CLIENT_LIST "A C"
     xdotool set_desktop_for_window "${WIDS[A]}" 3
-    precondition "A en el escritorio 4" wait_for test "$(net_desk A)" = 4
+    precondition "A en el escritorio 4" wait_for output_is 4 net_desk A
     expect_list A58-movida _NET_CLIENT_LIST "A C"
     xdotool windowunmap "${WIDS[C]}"
     expect_list A58-retirada _NET_CLIENT_LIST A
@@ -540,7 +540,7 @@ A61)
     expect A61-set-desktop "escritorio=3 foco=PointerRoot activa=ninguna A=o" A
     xdotool set_desktop_for_window "${WIDS[A]}" 4
     verdict=FALLA
-    wait_for test "$(net_desk A)" = 5 && desk_is 3 && hidden A && verdict=OK
+    wait_for output_is 5 net_desk A && desk_is 3 && hidden A && verdict=OK
     record A61-oculta-a-oculto "A al escritorio 5, oculta; activo 3" "A en $(net_desk A), $(map_state A); activo $(current_desk)" "$verdict" "xdotool set_desktop_for_window entre escritorios ocultos"
     xdotool set_desktop_for_window "${WIDS[A]}" 2
     expect A61-al-activo "escritorio=3 foco=PointerRoot activa=ninguna A=v" A

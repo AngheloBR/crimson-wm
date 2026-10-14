@@ -19,6 +19,11 @@
   completa, más el área completa para la que lo está, que conserva su
   posición en la lista (ADR 0009). *La «pantalla completa» que se cita
   abajo como no atendida está resuelta.*
+- **Actualización F8 (2026-10-14):** el valor de `WM_TRANSIENT_FOR` se
+  interpreta (ADR 0010). La clasificación no cambia, pero las flotantes se
+  suben por familias, cada diálogo encima de su principal, y un diálogo
+  flotante se centra sobre ella al gestionarse. `arrange` se llama siempre
+  antes de mapear una ventana nueva, también las flotantes.
 
 ## Contexto
 

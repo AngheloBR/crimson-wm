@@ -453,7 +453,7 @@ A69)
     expect_layout A69-destino-geometria "B=$FULL" "C=$LEFT" "E=$RIGHT"
     xdotool set_desktop_for_window "${WIDS[B]}" 0
     verdict=FALLA
-    wait_for test "$(net_desk B)" = 1 && fullscreen_is B && desk_is 3 && verdict=OK
+    wait_for output_is 1 net_desk B && fullscreen_is B && desk_is 3 && verdict=OK
     record A69-net-wm-desktop "B al escritorio 1, a pantalla completa" "B en $(net_desk B): $(net_state B); activo $(current_desk)" "$verdict" "xdotool set_desktop_for_window"
     go 1
     expect_layout A69-vuelta "B=$FULL" "A=$FULL"
@@ -596,7 +596,7 @@ A73)
     precondition "adopción" wait_for adopted 3
     wm_state B 1 2
     "$TEST_CLIENT" message 32 "${WIDS[C]}" _NET_WM_DESKTOP 1 2 0 0 0
-    precondition "C en el escritorio 2" wait_for test "$(net_desk C)" = 2
+    precondition "C en el escritorio 2" wait_for output_is 2 net_desk C
     wm_state C 1 2
     precondition "B y C a pantalla completa" wait_for eval 'fullscreen_is B && fullscreen_is C'
     # C, oculta, recibe el área al mostrarse su escritorio.

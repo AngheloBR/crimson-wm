@@ -13,6 +13,11 @@ use crate::clients::{Class, Client, Clients, Kind, Removed, Restore};
 /// Número fijo de escritorios.
 pub const COUNT: usize = 8;
 
+/// Máximo de eslabones de una cadena de propietarios (`WM_TRANSIENT_FOR`,
+/// ADR 0010). Una ventana cuya cadena es más larga no tiene propietario
+/// efectivo.
+pub const MAX_CHAIN: usize = 16;
+
 /// Cambio del escritorio activo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Switch {
@@ -178,13 +183,155 @@ impl Workspaces {
         self.previous.and_then(|to| self.switch(to))
     }
 
-    /// Lleva la ventana enfocada del escritorio activo al final de `to`, donde
-    /// pasa a ser la enfocada. El escritorio activo no cambia. `None`, sin
-    /// cambiar nada, si no hay ventana enfocada o `to` es el activo o está
-    /// fuera de rango.
-    pub fn move_focused(&mut self, to: usize) -> Option<Moved> {
-        let window = self.current().focused()?;
-        self.move_window(window, to, true)
+    /// Propietario declarado de una ventana, si está gestionado.
+    fn declared_managed(&self, window: Window) -> Option<Window> {
+        self.get(window)?
+            .transient_for
+            .filter(|&owner| self.get(owner).is_some())
+    }
+
+    /// Propietario efectivo (ADR 0010): el declarado en `WM_TRANSIENT_FOR`,
+    /// solo si está gestionado (en cualquier escritorio) y la cadena de
+    /// propietarios declarados que empieza en él no vuelve a la ventana ni
+    /// tiene más de `MAX_CHAIN` eslabones. Las ventanas de un ciclo no
+    /// tienen propietario efectivo; una que apunta a un ciclo sin formar
+    /// parte de él, sí (el miembro del ciclo es su raíz). Se resuelve cada
+    /// vez, así que una ventana destruida deja de ser propietaria sin
+    /// limpiar nada.
+    pub fn owner_of(&self, window: Window) -> Option<Window> {
+        let declared = self.declared_managed(window)?;
+        let mut seen = vec![window];
+        let mut current = declared;
+        loop {
+            if seen.contains(&current) {
+                // Ciclo: inválido si pasa por la ventana.
+                return (current != window).then_some(declared);
+            }
+            if seen.len() > MAX_CHAIN {
+                return None;
+            }
+            seen.push(current);
+            match self.declared_managed(current) {
+                Some(next) => current = next,
+                None => return Some(declared),
+            }
+        }
+    }
+
+    /// Dependientes transitivos (diálogos, sus diálogos…) de una ventana, en
+    /// todos los escritorios y en orden de gestión.
+    pub fn dependents(&self, window: Window) -> Vec<Window> {
+        let all = self.client_list();
+        let mut family = vec![window];
+        loop {
+            let before = family.len();
+            for &w in &all {
+                if !family.contains(&w) && self.owner_of(w).is_some_and(|o| family.contains(&o)) {
+                    family.push(w);
+                }
+            }
+            if family.len() == before {
+                break;
+            }
+        }
+        all.into_iter()
+            .filter(|w| *w != window && family.contains(w))
+            .collect()
+    }
+
+    /// A quién vuelve el foco al cerrarse un diálogo enfocado de `desk`: a su
+    /// propietario efectivo si sigue en ese escritorio y admite foco (ADR
+    /// 0010). `None`: se usa el historial.
+    pub fn focus_return(&self, owner: Option<Window>, desk: usize) -> Option<Window> {
+        owner.filter(|&o| self.locate(o) == Some(desk) && self.get(o).is_some_and(|c| c.focusable))
+    }
+
+    /// Orden en que se suben las flotantes de un escritorio (ADR 0010): cada
+    /// familia (una flotante sin propietario efectivo entre ellas y sus
+    /// dependientes flotantes) en orden de árbol, de modo que cada diálogo
+    /// queda justo encima de su propietario; las familias, de la que tiene
+    /// la ventana más antigua a la que tiene la más reciente, para que un
+    /// diálogo nuevo quede visible. Las de mosaico nunca se reordenan.
+    pub fn floating_stack(&self, desk: usize) -> Vec<Window> {
+        let Some(clients) = self.desks.get(desk) else {
+            return Vec::new();
+        };
+        let order = |w: Window| self.get(w).map_or(0, |c| c.order);
+        let mut floating: Vec<Window> = clients.floating().collect();
+        floating.sort_by_key(|&w| order(w));
+        let parent = |w: Window| self.owner_of(w).filter(|o| floating.contains(o));
+        let children = |p: Window| -> Vec<Window> {
+            floating
+                .iter()
+                .copied()
+                .filter(|&w| parent(w) == Some(p))
+                .collect()
+        };
+        let mut roots: Vec<(u64, Window)> = Vec::new();
+        for &root in floating.iter().filter(|&&w| parent(w).is_none()) {
+            let mut newest = order(root);
+            let mut stack = vec![root];
+            let mut visited = Vec::new();
+            while let Some(w) = stack.pop() {
+                if visited.contains(&w) {
+                    continue;
+                }
+                visited.push(w);
+                newest = newest.max(order(w));
+                stack.extend(children(w));
+            }
+            roots.push((newest, root));
+        }
+        roots.sort_by_key(|&(newest, root)| (newest, order(root)));
+        let mut result = Vec::new();
+        for (_, root) in roots {
+            let mut stack = vec![root];
+            while let Some(w) = stack.pop() {
+                if result.contains(&w) {
+                    continue;
+                }
+                result.push(w);
+                // Al revés: el primer hijo sale antes de la pila.
+                stack.extend(children(w).into_iter().rev());
+            }
+        }
+        result
+    }
+
+    /// Lleva una ventana y sus dependientes transitivos que estén en su
+    /// mismo escritorio a `to`, conservando su orden; el escritorio activo
+    /// no cambia (ADR 0010). Con `focus`, la ventana pasa a ser la enfocada
+    /// del destino. Vacío si no se mueve nada.
+    pub fn move_family(&mut self, window: Window, to: usize, focus: bool) -> Vec<Moved> {
+        let Some(from) = self.locate(window) else {
+            return Vec::new();
+        };
+        let family: Vec<Window> = self
+            .dependents(window)
+            .into_iter()
+            .filter(|&d| self.locate(d) == Some(from))
+            .collect();
+        let Some(main) = self.move_window(window, to, focus) else {
+            return Vec::new();
+        };
+        let mut moved = vec![main];
+        moved.extend(
+            family
+                .into_iter()
+                .filter_map(|d| self.move_window(d, to, false)),
+        );
+        moved
+    }
+
+    /// Lleva la ventana enfocada del escritorio activo, con su familia del
+    /// mismo escritorio (ADR 0010), al final de `to`, donde pasa a ser la
+    /// enfocada. El escritorio activo no cambia. Vacío, sin cambiar nada, si
+    /// no hay ventana enfocada o `to` es el activo o está fuera de rango.
+    pub fn move_focused(&mut self, to: usize) -> Vec<Moved> {
+        match self.current().focused() {
+            Some(window) => self.move_family(window, to, true),
+            None => Vec::new(),
+        }
     }
 
     /// Lleva una ventana de cualquier escritorio al final de `to`, sin
@@ -222,6 +369,22 @@ impl Workspaces {
         assert_ne!(self.previous, Some(self.current));
         assert!(self.previous.is_none_or(|p| p < COUNT));
         let list = self.client_list();
+        for &w in &list {
+            // La relación efectiva no tiene ciclos y siempre apunta a una
+            // ventana gestionada distinta.
+            let mut current = w;
+            for _ in 0..=list.len() {
+                match self.owner_of(current) {
+                    Some(owner) => {
+                        assert_ne!(owner, current, "propia propietaria {w}");
+                        assert!(self.get(owner).is_some(), "propietario no gestionado");
+                        current = owner;
+                    }
+                    None => break,
+                }
+            }
+            assert!(self.owner_of(current).is_none(), "ciclo efectivo desde {w}");
+        }
         let total: usize = self.desks.iter().map(|d| d.windows().count()).sum();
         assert_eq!(list.len(), total, "_NET_CLIENT_LIST incompleta");
         for (i, w) in list.iter().enumerate() {
@@ -253,6 +416,7 @@ mod tests {
         focusable: true,
         input: InputModel::Passive,
         delete_window: false,
+        transient_for: None,
     };
     const FLOATING: Class = Class {
         kind: Kind::Floating,
@@ -263,6 +427,7 @@ mod tests {
         focusable: false,
         input: InputModel::Passive,
         delete_window: false,
+        transient_for: None,
     };
 
     fn tiled(ws: &Workspaces, desk: usize) -> Vec<Window> {
@@ -361,14 +526,14 @@ mod tests {
 
         assert_eq!(
             ws.move_focused(4),
-            Some(Moved {
+            vec![Moved {
                 window: 2,
                 kind: Kind::Tiled,
                 from: 0,
                 to: 4,
                 was_focused: true,
                 displaced: None,
-            })
+            }]
         );
         // Sale del origen, que vuelve a la anterior del historial.
         assert_eq!(tiled(&ws, 0), vec![1, 3]);
@@ -385,13 +550,13 @@ mod tests {
     #[test]
     fn mover_sin_efecto() {
         let mut ws = Workspaces::default();
-        assert_eq!(ws.move_focused(1), None, "sin ventanas");
+        assert!(ws.move_focused(1).is_empty(), "sin ventanas");
         ws.manage(1, TILED);
         ws.manage(2, PANEL);
-        assert_eq!(ws.move_focused(1), None, "sin ventana enfocada");
+        assert!(ws.move_focused(1).is_empty(), "sin ventana enfocada");
         ws.current_mut().focus(1);
-        assert_eq!(ws.move_focused(0), None, "mismo escritorio");
-        assert_eq!(ws.move_focused(COUNT), None, "fuera de rango");
+        assert!(ws.move_focused(0).is_empty(), "mismo escritorio");
+        assert!(ws.move_focused(COUNT).is_empty(), "fuera de rango");
         assert_eq!(ws.current().windows().collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(ws.current().focused(), Some(1));
         ws.assert_consistent();
@@ -404,7 +569,7 @@ mod tests {
         ws.manage(2, FLOATING);
         ws.current_mut().focus(1);
         ws.current_mut().focus(2);
-        let moved = ws.move_focused(7).unwrap();
+        let moved = ws.move_focused(7)[0];
         assert_eq!((moved.window, moved.kind), (2, Kind::Floating));
         assert_eq!(ws.desk(7).unwrap().floating().collect::<Vec<_>>(), vec![2]);
         assert_eq!(ws.current().fallback(), Some(1));
@@ -566,7 +731,7 @@ mod tests {
         ws.enter_fullscreen(30, TILED_RESTORE);
         ws.switch(0);
         // Conserva el estado; en el destino, la anterior lo deja.
-        let moved = ws.move_focused(3).unwrap();
+        let moved = ws.move_focused(3)[0];
         assert_eq!(moved.displaced, Some((30, TILED_RESTORE)));
         assert_eq!(ws.desk(3).unwrap().fullscreen(), Some(1));
         assert_eq!(ws.current().fullscreen(), None);
@@ -578,6 +743,150 @@ mod tests {
         ws.manage(4, TILED);
         assert_eq!(ws.move_window(4, 5, false).unwrap().displaced, None);
         assert_eq!(ws.desk(5).unwrap().fullscreen(), Some(2));
+        ws.assert_consistent();
+    }
+
+    // U20: relaciones entre ventanas (WM_TRANSIENT_FOR).
+
+    fn transient(owner: Window) -> Class {
+        Class {
+            transient_for: Some(owner),
+            ..FLOATING
+        }
+    }
+
+    #[test]
+    fn propietario_efectivo() {
+        let mut ws = Workspaces::default();
+        ws.manage(1, TILED);
+        ws.manage(2, transient(1));
+        ws.manage(3, transient(2));
+        ws.manage(4, transient(99));
+        assert_eq!(ws.owner_of(2), Some(1));
+        assert_eq!(ws.owner_of(3), Some(2), "cadena");
+        assert_eq!(ws.owner_of(4), None, "propietario pendiente");
+        assert_eq!(ws.owner_of(1), None);
+        // El propietario pendiente llega: la relación empieza a valer.
+        ws.manage(99, TILED);
+        assert_eq!(ws.owner_of(4), Some(99));
+        // En otro escritorio también es propietario.
+        ws.move_window(99, 5, false);
+        assert_eq!(ws.owner_of(4), Some(99));
+        // Al desaparecer, deja de serlo sin limpiar nada.
+        ws.unmanage(1);
+        assert_eq!(ws.owner_of(2), None);
+        assert_eq!(ws.owner_of(3), Some(2));
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn ciclos_y_cadenas_largas() {
+        let mut ws = Workspaces::default();
+        // Ciclo de dos: 1 → 2 → 1.
+        ws.manage(1, transient(2));
+        ws.manage(2, transient(1));
+        assert_eq!((ws.owner_of(1), ws.owner_of(2)), (None, None));
+        // Ciclo de tres: 3 → 4 → 5 → 3.
+        ws.manage(3, transient(4));
+        ws.manage(4, transient(5));
+        ws.manage(5, transient(3));
+        for w in [3, 4, 5] {
+            assert_eq!(ws.owner_of(w), None, "{w}");
+        }
+        // Una ventana que apunta a un ciclo sin formar parte de él.
+        ws.manage(6, transient(3));
+        assert_eq!(ws.owner_of(6), Some(3));
+        // Cadena de 16 eslabones: vale; de 17: no.
+        ws.manage(100, TILED);
+        for w in 101..=117 {
+            ws.manage(w, transient(w - 1));
+        }
+        assert_eq!(ws.owner_of(116), Some(115), "16 eslabones hasta la raíz");
+        assert_eq!(ws.owner_of(117), None, "17 eslabones");
+        assert_eq!(ws.owner_of(101), Some(100));
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn dependientes_y_retorno_del_foco() {
+        let mut ws = Workspaces::default();
+        ws.manage(1, TILED);
+        ws.manage(2, transient(1));
+        ws.manage(3, TILED);
+        ws.manage(4, transient(2));
+        ws.manage(5, transient(1));
+        assert_eq!(ws.dependents(1), vec![2, 4, 5], "transitivos, en orden");
+        assert_eq!(ws.dependents(2), vec![4]);
+        assert_eq!(ws.dependents(3), Vec::<Window>::new());
+        // El foco vuelve al propietario del mismo escritorio que admite foco.
+        assert_eq!(ws.focus_return(ws.owner_of(4), 0), Some(2));
+        assert_eq!(ws.focus_return(None, 0), None);
+        ws.move_window(2, 3, false);
+        assert_eq!(ws.focus_return(ws.owner_of(4), 0), None, "otro escritorio");
+        ws.manage(7, PANEL);
+        ws.manage(8, transient(7));
+        assert_eq!(ws.focus_return(ws.owner_of(8), 0), None, "sin foco");
+    }
+
+    #[test]
+    fn pila_jerarquica_de_flotantes() {
+        let mut ws = Workspaces::default();
+        ws.manage(1, TILED);
+        ws.manage(10, FLOATING); // flotante sin propietario (antigua)
+        ws.manage(2, transient(1)); // diálogo de una de mosaico
+        ws.manage(20, FLOATING); // otra flotante sin propietario
+        ws.manage(3, transient(2)); // subdiálogo
+        assert_eq!(ws.floating_stack(0), vec![10, 20, 2, 3]);
+        // Un diálogo nuevo de la flotante más antigua: su familia sube.
+        ws.manage(11, transient(10));
+        assert_eq!(ws.floating_stack(0), vec![20, 2, 3, 10, 11]);
+        // Cada diálogo, justo encima de su propietario y de los anteriores.
+        ws.manage(12, transient(10));
+        ws.manage(13, transient(11));
+        assert_eq!(ws.floating_stack(0), vec![20, 2, 3, 10, 11, 13, 12]);
+        // Los ciclos no rompen el orden ni lo repiten.
+        ws.manage(30, transient(31));
+        ws.manage(31, transient(30));
+        let stack = ws.floating_stack(0);
+        assert_eq!(stack.len(), 9);
+        assert_eq!(&stack[7..], &[30, 31]);
+        assert_eq!(ws.floating_stack(COUNT), Vec::<Window>::new());
+    }
+
+    #[test]
+    fn mover_una_familia() {
+        let mut ws = Workspaces::default();
+        ws.manage(1, TILED);
+        ws.manage(2, transient(1));
+        ws.manage(3, transient(2));
+        ws.manage(4, TILED);
+        ws.manage(5, transient(1));
+        ws.move_window(5, 6, false); // diálogo ya en otro escritorio
+        ws.current_mut().focus(1);
+        let moved = ws.move_family(1, 3, true);
+        let windows: Vec<Window> = moved.iter().map(|m| m.window).collect();
+        assert_eq!(
+            windows,
+            vec![1, 2, 3],
+            "solo los del mismo escritorio, en orden"
+        );
+        assert_eq!(
+            ws.desk(3).unwrap().windows().collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(ws.desk(3).unwrap().focused(), Some(1));
+        assert_eq!(ws.locate(5), Some(6));
+        assert_eq!(ws.locate(4), Some(0));
+        // Mover solo un diálogo lleva sus subdiálogos, no a su propietario.
+        let moved = ws.move_family(2, 7, false);
+        assert_eq!(
+            moved.iter().map(|m| m.window).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(ws.locate(1), Some(3));
+        assert_eq!(ws.owner_of(2), Some(1), "la relación se mantiene");
+        assert!(ws.move_family(2, 7, false).is_empty(), "mismo escritorio");
+        assert!(ws.move_family(99, 1, false).is_empty(), "no gestionada");
         ws.assert_consistent();
     }
 
@@ -620,7 +929,7 @@ mod tests {
                 }
                 6 => {
                     let focused = ws.current().focused();
-                    match ws.move_focused(desk) {
+                    match ws.move_focused(desk).first().copied() {
                         Some(moved) => {
                             assert_eq!(Some(moved.window), focused);
                             assert_eq!(ws.locate(moved.window), Some(desk));
@@ -631,6 +940,18 @@ mod tests {
                 }
                 7 => {
                     ws.current_mut().zoom();
+                }
+                8 if next(4) == 0 => {
+                    // Relaciones arbitrarias, también ciclos y la propia
+                    // ventana: los invariantes deben mantenerse.
+                    let owner = Window::try_from(next(26)).unwrap();
+                    if let Some(client) = ws.get_mut(window) {
+                        client.transient_for = (owner != 0).then_some(owner);
+                    }
+                    if next(2) == 0 {
+                        ws.move_family(window, desk, false);
+                    }
+                    let _ = ws.floating_stack(ws.index());
                 }
                 8 if next(3) == 0 => {
                     if next(2) == 0 {

@@ -38,6 +38,12 @@
   elimina por su cuenta. La segunda instancia de A6 se detiene ahora en la
   capa 3; la capa 4 (`BadAccess`) se prueba en A54 con un cliente que solo
   toma `SubstructureRedirect`.
+- **Actualización F8-B.1 (2026-10-14):** las comprobaciones de residuos de
+  Xvfb (A9 y sus equivalentes en F2–F8) ya no cuentan como residuo
+  cualquier recurso nuevo del sistema. Cada caso anota su propio Xvfb, y
+  cada recurso se atribuye: los propios que persisten siempre fallan, y los
+  ajenos solo se aceptan si todos los Xvfb del arnés están anotados (ADR
+  0010, «Aislamiento de las comprobaciones de residuos»).
 
 ## Contexto
 
@@ -250,7 +256,8 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
   conectan con ningún servidor X, antes y después de las pruebas:
   - `pgrep -x bspwm` y `pgrep -x sxhkd`, que deben conservar el PID;
   - que no haya servidores Xvfb, locks `/tmp/.X*-lock`, sockets en
-    `/tmp/.X11-unix` ni directorios `xvfb-run.*` nuevos.
+    `/tmp/.X11-unix` ni directorios `xvfb-run.*` nuevos (desde F8-B.1:
+    ninguno propio y ninguno nuevo sin atribuir; ADR 0010).
 
   **No se consulta la raíz de `:0`**, por ejemplo con
   `xprop -display :0`, ni se usa ninguna otra herramienta X contra la

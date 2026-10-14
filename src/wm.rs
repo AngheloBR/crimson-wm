@@ -22,6 +22,12 @@
 //! cambia `Client.fullscreen`; la geometría sale de `Clients::plan` y la
 //! ventana a pantalla completa sube con el foco y baja cuando se enfoca otra
 //! de su escritorio (`restack_fullscreen`).
+//!
+//! Diálogos (ADR 0010): `WM_TRANSIENT_FOR` se guarda como propietario
+//! declarado y se resuelve al usarlo (`Workspaces::owner_of`). Un diálogo
+//! nace en el escritorio de su principal, centrado sobre ella si no pide
+//! posición, queda encima de ella (`Workspaces::floating_stack`), se mueve
+//! con ella y, al cerrarse, devuelve el foco a ella.
 
 use std::collections::VecDeque;
 
@@ -44,9 +50,9 @@ use crate::clients::{
 use crate::display::Target;
 use crate::error::Fatal;
 use crate::ewmh::{self, MessageTypes, Request, Source, StateRead};
-use crate::icccm::{self, ICONIC_STATE, NORMAL_STATE, ProtocolAtoms, Protocols};
+use crate::icccm::{self, ICONIC_STATE, NORMAL_STATE, ProtocolAtoms, Protocols, TransientFor};
 use crate::keys::{self, Action, Repeats};
-use crate::layout::Rect;
+use crate::layout::{self, Rect};
 use crate::safeguards;
 use crate::spawn::Launcher;
 use crate::workspaces::{self, Switch, Workspaces};
@@ -666,9 +672,11 @@ impl<C: Connection> Wm<'_, C> {
         self.set_focus(self.workspaces.current().fallback(), CURRENT_TIME)
     }
 
-    /// Una ventana nueva, también un diálogo, se gestiona en el escritorio
-    /// activo. Una ventana gestionada de otro escritorio sigue oculta: ni se
-    /// cambia de escritorio ni se le da el foco (ADR 0007).
+    /// Una ventana nueva se gestiona en el escritorio activo, salvo un
+    /// diálogo cuyo propietario efectivo está en otro: va oculto a ese
+    /// escritorio, sin cambiar el activo ni el foco (ADR 0010). Una ventana
+    /// gestionada de otro escritorio sigue oculta: ni se cambia de escritorio
+    /// ni se le da el foco (ADR 0007).
     fn on_map_request(&mut self, window: Window) -> Result<(), Fatal> {
         if let Some(desk) = self.workspaces.locate(window) {
             if desk != self.workspaces.index() {
@@ -687,15 +695,24 @@ impl<C: Connection> Wm<'_, C> {
             };
             if let Some(class) = clients::classify(&info, &self.window_types()) {
                 self.manage(window, class)?;
+                self.log_relation(window, info.transient);
+                let hidden = self.place_with_owner(window)?;
+                if class.kind == Kind::Floating {
+                    self.center_on_owner(window)?;
+                }
                 if info.fullscreen {
                     // Pedida antes del mapeo (EWMH): ya aparece a pantalla
                     // completa.
                     self.set_fullscreen(window, true, "estado inicial", false)?;
-                } else if class.kind == Kind::Tiled {
-                    // Se coloca antes de mapearla para que aparezca ya con
-                    // su tamaño.
-                    self.arrange()?;
                 }
+                if hidden {
+                    // Oculta con su principal: no se mapea ni recibe el foco.
+                    return Ok(());
+                }
+                // Se coloca antes de mapearla para que aparezca ya con su
+                // tamaño y en su sitio de la pila (los diálogos, encima de su
+                // principal).
+                self.arrange()?;
                 focus = class.focusable;
             }
         }
@@ -778,6 +795,8 @@ impl<C: Connection> Wm<'_, C> {
     /// reorganiza al mostrarse.
     fn forget(&mut self, window: Window, gone: Gone) -> Result<(), Fatal> {
         let pending = self.unmaps.forget(window);
+        // Antes de olvidarla: a su propietario vuelve el foco (ADR 0010).
+        let owner = self.workspaces.owner_of(window);
         let Some((desk, removed)) = self.workspaces.unmanage(window) else {
             return Ok(());
         };
@@ -827,15 +846,125 @@ impl<C: Connection> Wm<'_, C> {
                 .map_err(Fatal::lost)?
                 .ignore_error();
         }
+        let back = if removed.was_focused {
+            self.workspaces.focus_return(owner, desk)
+        } else {
+            None
+        };
         if !active {
+            // Al mostrar ese escritorio, el foco irá a la propietaria.
+            if let (Some(owner), Some(clients)) = (back, self.workspaces.desk_mut(desk)) {
+                clients.focus(owner);
+            }
             return Ok(());
         }
         if removed.kind == Kind::Tiled || removed.fullscreen {
             self.arrange()?;
         }
         if removed.was_focused {
-            self.set_focus(self.workspaces.current().fallback(), CURRENT_TIME)?;
+            let target = back.or_else(|| self.workspaces.current().fallback());
+            self.set_focus(target, CURRENT_TIME)?;
         }
+        Ok(())
+    }
+
+    /// Registra por qué una ventana con `WM_TRANSIENT_FOR` no tiene
+    /// propietario efectivo, si es el caso (ADR 0010).
+    fn log_relation(&self, window: Window, transient: bool) {
+        let Some(client) = self.workspaces.get(window) else {
+            return;
+        };
+        let reason = match client.transient_for {
+            None if transient => "valor 0, la raíz o la propia ventana",
+            None => return,
+            Some(owner) if self.workspaces.owner_of(window).is_some() => {
+                eprintln!("crimson-wm: ventana 0x{window:x}: diálogo de 0x{owner:x}");
+                return;
+            }
+            Some(owner) if self.workspaces.get(owner).is_none() => {
+                "propietario pendiente o no gestionado"
+            }
+            Some(_) => "ciclo o cadena de más de 16 propietarios",
+        };
+        eprintln!(
+            "crimson-wm: ventana 0x{window:x}: WM_TRANSIENT_FOR sin propietario efectivo ({reason})"
+        );
+    }
+
+    /// Un diálogo recién gestionado va al escritorio de su propietario
+    /// efectivo (ADR 0010). Si es otro que el activo, queda oculto allí,
+    /// como la más reciente de su historial, sin cambiar el escritorio
+    /// activo ni el foco. Devuelve `true` si queda oculto.
+    fn place_with_owner(&mut self, window: Window) -> Result<bool, Fatal> {
+        let current = self.workspaces.index();
+        let Some(desk) = self
+            .workspaces
+            .owner_of(window)
+            .and_then(|o| self.workspaces.locate(o))
+            .filter(|&d| d != current)
+        else {
+            return Ok(false);
+        };
+        if self.workspaces.move_window(window, desk, true).is_none() {
+            return Ok(false);
+        }
+        self.publish_desktop(window, desk)?;
+        self.set_wm_state(window, ICONIC_STATE)?;
+        self.dirty.stacking = true;
+        eprintln!(
+            "crimson-wm: ventana 0x{window:x} al escritorio {} con su principal (oculta)",
+            desk + 1
+        );
+        Ok(true)
+    }
+
+    /// Centra un diálogo flotante recién gestionado sobre la geometría real
+    /// de su propietario efectivo, dentro del área (ADR 0010). No se centra:
+    /// sin propietario efectivo; si `WM_NORMAL_HINTS` pide una posición
+    /// (`USPosition` o `PPosition`); o si alguna de las dos ventanas ya no
+    /// existe. Solo se hace al gestionarla, nunca al reorganizar.
+    fn center_on_owner(&mut self, window: Window) -> Result<(), Fatal> {
+        let Some(owner) = self.workspaces.owner_of(window) else {
+            return Ok(());
+        };
+        let hints = self
+            .conn
+            .get_property(
+                false,
+                window,
+                AtomEnum::WM_NORMAL_HINTS,
+                AtomEnum::WM_SIZE_HINTS,
+                0,
+                icccm::WM_NORMAL_HINTS_LEN,
+            )
+            .map_err(Fatal::lost)?
+            .reply();
+        let Some(hints) = reply_or_gone(hints, window, "GetProperty(WM_NORMAL_HINTS)")? else {
+            return Ok(());
+        };
+        let flags: Vec<u32> = hints.value32().map(Iterator::collect).unwrap_or_default();
+        if icccm::explicit_position(&flags) {
+            eprintln!("crimson-wm: ventana 0x{window:x}: posición del cliente (WM_NORMAL_HINTS)");
+            return Ok(());
+        }
+        let (Some(over), Some(own)) = (self.frame_of(owner)?, self.frame_of(window)?) else {
+            return Ok(());
+        };
+        let (x, y) = layout::center(
+            own.rect.width,
+            own.rect.height,
+            own.border,
+            over.rect,
+            self.area,
+        );
+        self.conn
+            .configure_window(
+                window,
+                &ConfigureWindowAux::new().x(i32::from(x)).y(i32::from(y)),
+            )
+            .map_err(Fatal::lost)?
+            .ignore_error();
+        eprintln!("crimson-wm: ventana 0x{window:x} centrada sobre 0x{owner:x} en {x},{y}");
         Ok(())
     }
 
@@ -936,24 +1065,29 @@ impl<C: Connection> Wm<'_, C> {
     /// `Mod4+Shift+1`…`8`: lleva la ventana enfocada a ese escritorio, donde
     /// será la enfocada, sin cambiar de escritorio. El foco pasa a la más
     /// reciente del historial del activo.
+    ///
+    /// Sus dependientes del mismo escritorio (diálogos) van con ella, en su
+    /// orden (ADR 0010).
     fn move_to(&mut self, desk: usize, time: Timestamp) -> Result<(), Fatal> {
-        let Some(moved) = self.workspaces.move_focused(desk) else {
+        let family = self.workspaces.move_focused(desk);
+        if family.is_empty() {
             return Ok(());
-        };
-        eprintln!(
-            "crimson-wm: ventana 0x{:x} llevada al escritorio {}",
-            moved.window,
-            moved.to + 1
-        );
-        self.publish_desktop(moved.window, moved.to)?;
-        self.restore_displaced(moved.displaced, moved.to)?;
-        // Como en `show`: el foco cambia antes de ocultar la ventana.
-        self.set_focus(self.workspaces.current().fallback(), time)?;
-        self.hide(moved.window)?;
-        if moved.kind == Kind::Tiled {
-            self.arrange()?;
         }
-        Ok(())
+        for moved in &family {
+            eprintln!(
+                "crimson-wm: ventana 0x{:x} llevada al escritorio {}",
+                moved.window,
+                moved.to + 1
+            );
+            self.publish_desktop(moved.window, moved.to)?;
+            self.restore_displaced(moved.displaced, moved.to)?;
+        }
+        // Como en `show`: el foco cambia antes de ocultar las ventanas.
+        self.set_focus(self.workspaces.current().fallback(), time)?;
+        for moved in &family {
+            self.hide(moved.window)?;
+        }
+        self.arrange()
     }
 
     /// La ventana que deja la pantalla completa en el escritorio de destino
@@ -982,34 +1116,40 @@ impl<C: Connection> Wm<'_, C> {
     /// a otro sin cambiar el activo ni darle el foco. Si sale del activo, se
     /// oculta (y el foco pasa a la siguiente del historial si la tenía); si
     /// entra en él, se muestra.
+    ///
+    /// Sus dependientes del mismo escritorio van con ella (ADR 0010).
     fn move_window(&mut self, window: Window, desk: usize) -> Result<(), Fatal> {
-        let Some(moved) = self.workspaces.move_window(window, desk, false) else {
+        let family = self.workspaces.move_family(window, desk, false);
+        if family.is_empty() {
             eprintln!(
                 "crimson-wm: _NET_WM_DESKTOP sin efecto: 0x{window:x} no está gestionada o ya está en el escritorio {}",
                 desk + 1
             );
             return Ok(());
-        };
-        eprintln!(
-            "crimson-wm: ventana 0x{window:x} llevada al escritorio {} (_NET_WM_DESKTOP)",
-            moved.to + 1
-        );
-        self.publish_desktop(window, moved.to)?;
-        self.restore_displaced(moved.displaced, moved.to)?;
+        }
         let current = self.workspaces.index();
-        if moved.from == current {
-            if moved.was_focused {
-                self.set_focus(self.workspaces.current().fallback(), CURRENT_TIME)?;
+        for moved in &family {
+            eprintln!(
+                "crimson-wm: ventana 0x{:x} llevada al escritorio {} (_NET_WM_DESKTOP)",
+                moved.window,
+                moved.to + 1
+            );
+            self.publish_desktop(moved.window, moved.to)?;
+            self.restore_displaced(moved.displaced, moved.to)?;
+        }
+        if family.iter().any(|m| m.from == current && m.was_focused) {
+            self.set_focus(self.workspaces.current().fallback(), CURRENT_TIME)?;
+        }
+        for moved in &family {
+            if moved.from == current {
+                self.hide(moved.window)?;
             }
-            self.hide(window)?;
-            if moved.kind == Kind::Tiled {
-                self.arrange()?;
-            }
-        } else if moved.to == current {
-            // Colocada antes de mapearla; las flotantes, encima.
-            self.arrange()?;
-            self.set_wm_state(window, NORMAL_STATE)?;
-            self.conn.map_window(window).map_err(Fatal::lost)?;
+        }
+        // Las que entran en el activo se colocan antes de mapearlas.
+        self.arrange()?;
+        for moved in family.iter().filter(|m| m.to == current) {
+            self.set_wm_state(moved.window, NORMAL_STATE)?;
+            self.conn.map_window(moved.window).map_err(Fatal::lost)?;
         }
         self.dirty.stacking = true;
         Ok(())
@@ -1069,7 +1209,12 @@ impl<C: Connection> Wm<'_, C> {
     /// entrada y el soporte de `WM_DELETE_WINDOW`. Las demás propiedades
     /// (también las que escribe el propio WM) se ignoran, así que no hay
     /// bucles. El cambio se aplica en la siguiente decisión de foco.
+    ///
+    /// `WM_TRANSIENT_FOR` se trata aparte (`on_transient_for`).
     fn on_property_notify(&mut self, event: &PropertyNotifyEvent) -> Result<(), Fatal> {
+        if event.atom == u32::from(AtomEnum::WM_TRANSIENT_FOR) {
+            return self.on_transient_for(event.window);
+        }
         let relevant = [u32::from(AtomEnum::WM_HINTS), self.atoms.WM_PROTOCOLS];
         if !relevant.contains(&event.atom) || self.workspaces.get(event.window).is_none() {
             return Ok(());
@@ -1089,6 +1234,51 @@ impl<C: Connection> Wm<'_, C> {
                 event.window,
                 if protocols.delete_window { "sí" } else { "no" }
             );
+        }
+        Ok(())
+    }
+
+    /// Cambio de `WM_TRANSIENT_FOR` de una ventana gestionada (ADR 0010): se
+    /// vuelve a leer y validar y se actualiza el propietario declarado. No
+    /// se reclasifica la ventana, no se mueve de escritorio ni cambia el
+    /// foco; solo se recoloca la pila. El WM nunca escribe esta propiedad,
+    /// así que no hay bucles.
+    fn on_transient_for(&mut self, window: Window) -> Result<(), Fatal> {
+        let Some(desk) = self.workspaces.locate(window) else {
+            return Ok(());
+        };
+        let reply = self
+            .conn
+            .get_property(
+                false,
+                window,
+                AtomEnum::WM_TRANSIENT_FOR,
+                AtomEnum::ANY,
+                0,
+                1,
+            )
+            .map_err(Fatal::lost)?
+            .reply();
+        let Some(reply) = reply_or_gone(reply, window, "GetProperty(WM_TRANSIENT_FOR)")? else {
+            return Ok(());
+        };
+        let values: Vec<u32> = reply.value32().map(Iterator::collect).unwrap_or_default();
+        let declared = TransientFor::parse(&values, window, self.root);
+        let Some(client) = self.workspaces.get_mut(window) else {
+            return Ok(());
+        };
+        if client.transient_for == declared.owner() {
+            return Ok(());
+        }
+        client.transient_for = declared.owner();
+        eprintln!(
+            "crimson-wm: ventana 0x{window:x}: WM_TRANSIENT_FOR cambiado a {declared:?} (PropertyNotify)"
+        );
+        self.log_relation(window, declared != TransientFor::None);
+        if desk == self.workspaces.index() {
+            self.arrange()?;
+        } else {
+            self.dirty.stacking = true;
         }
         Ok(())
     }
@@ -1484,12 +1674,26 @@ impl<C: Connection> Wm<'_, C> {
     /// La ventana a pantalla completa del escritorio activo sube por encima
     /// de todo si tiene el foco y baja al fondo si no: así la enfocada, en
     /// mosaico o flotante, queda visible (EWMH, ADR 0009).
+    ///
+    /// Desde F8 cuenta su familia (ADR 0010): si el foco lo tiene uno de sus
+    /// dependientes del mismo escritorio (un diálogo), también sube, y sus
+    /// dependientes quedan encima de ella, en su orden de pila.
     fn restack_fullscreen(&mut self) -> Result<(), Fatal> {
+        let index = self.workspaces.index();
         let desk = self.workspaces.current();
         let Some(window) = desk.fullscreen() else {
             return Ok(());
         };
-        let mode = if desk.focused() == Some(window) {
+        let focused = desk.focused();
+        let family: Vec<Window> = self
+            .workspaces
+            .dependents(window)
+            .into_iter()
+            .filter(|&d| self.workspaces.locate(d) == Some(index))
+            .collect();
+        let family_focused =
+            focused == Some(window) || focused.is_some_and(|f| family.contains(&f));
+        let mode = if family_focused {
             StackMode::ABOVE
         } else {
             StackMode::BELOW
@@ -1497,6 +1701,23 @@ impl<C: Connection> Wm<'_, C> {
         self.conn
             .configure_window(window, &ConfigureWindowAux::new().stack_mode(mode))
             .map_err(Fatal::lost)?;
+        if family_focused {
+            let raise = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
+            let order = self.workspaces.floating_stack(index);
+            let mut above: Vec<Window> = order.into_iter().filter(|w| family.contains(w)).collect();
+            // Las de mosaico de la familia (raro), al final.
+            let rest: Vec<Window> = family
+                .iter()
+                .copied()
+                .filter(|w| !above.contains(w))
+                .collect();
+            above.extend(rest);
+            for dependent in above {
+                self.conn
+                    .configure_window(dependent, &raise)
+                    .map_err(Fatal::lost)?;
+            }
+        }
         self.dirty.stacking = true;
         Ok(())
     }
@@ -1652,10 +1873,11 @@ impl<C: Connection> Wm<'_, C> {
     fn arrange(&mut self) -> Result<(), Fatal> {
         self.place(self.workspaces.index())?;
         let raise = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
+        // Pila jerárquica (ADR 0010): cada diálogo, encima de su principal.
         let floating: Vec<Window> = self
             .workspaces
-            .current()
-            .floating()
+            .floating_stack(self.workspaces.index())
+            .into_iter()
             .filter(|&w| {
                 self.workspaces
                     .get(w)
@@ -1757,6 +1979,7 @@ impl<C: Connection> Wm<'_, C> {
             // Se acepta cualquier tipo de propiedad con un valor de 32 bits:
             // ICCCM espera WINDOW, pero la regla permisiva es inocua.
             transient: transient.format == 32 && transient.value_len >= 1,
+            owner: TransientFor::parse(&values32(&transient), window, self.root).owner(),
             types: values32(&types),
             input: icccm::input_hint(&values32(&hints)),
             protocols: Protocols::parse(&values32(&protocols), self.protocol_atoms()),

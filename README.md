@@ -3,17 +3,18 @@
 Gestor de ventanas para X11, escrito en Rust y dirigido inicialmente a
 Debian 13 (Trixie), orientado a la gestión de ventanas en mosaico. Por ahora
 es un prototipo con un único diseño, master-stack, ocho escritorios
-virtuales, pantalla completa y compatibilidad parcial con ICCCM y EWMH (ver
-«Estado»).
+virtuales, pantalla completa, diálogos que siguen a su ventana principal y
+compatibilidad parcial con ICCCM y EWMH (ver «Estado»).
 
 ## Estado
 
-Fase F7: pantalla completa (`Mod4+f` y `_NET_WM_STATE_FULLSCREEN`), sobre
-la compatibilidad ICCCM/EWMH, los escritorios virtuales, el lanzamiento de
-aplicaciones, el foco por teclado y el mosaico master-stack. **Todavía no es
-un gestor de ventanas utilizable:** solo arranca en un servidor X de prueba
-que supere las salvaguardas del ADR 0003, coloca las ventanas normales en
-mosaico, deja flotantes los diálogos, gestiona el foco con el teclado,
+Fase F8: diálogos y ventanas transitorias (`WM_TRANSIENT_FOR`), sobre la
+pantalla completa, la compatibilidad ICCCM/EWMH, los escritorios virtuales,
+el lanzamiento de aplicaciones, el foco por teclado y el mosaico
+master-stack. **Todavía no es un gestor de ventanas utilizable:** solo
+arranca en un servidor X de prueba que supere las salvaguardas del ADR
+0003, coloca las ventanas normales en mosaico, deja flotantes los diálogos
+y los mantiene con su ventana principal, gestiona el foco con el teclado,
 reparte las ventanas en ocho escritorios, pone una ventana a pantalla
 completa, cierra ventanas, lanza seis programas fijos y termina con el
 atajo provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones,
@@ -21,13 +22,15 @@ paneles, varios monitores ni configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
 (2026-10-11). Últimos resultados registrados, todos del 2026-10-14 en Xvfb
-sobre el binario de depuración de F7 (detalles y limitaciones en los ADR
-0003 a 0009):
+sobre el binario de depuración de F8 (detalles y limitaciones en los ADR
+0003 a 0010):
 
-- Pruebas unitarias U1–U18 (105 pruebas de `cargo test`): pasaron.
-- Aceptación de F7: A63 y A65–A74 pasaron y **A75 quedó parcial**, porque
-  la consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
+- Pruebas unitarias U1–U20 (120 pruebas de `cargo test`): pasaron.
+- Aceptación de F8: A76–A86 pasaron y **A87 quedó parcial**, porque la
+  consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
   programas falsos, nunca las aplicaciones reales.
+- Regresión de F7: A63 y A65–A74 pasaron y **A75 quedó parcial** por el
+  mismo motivo.
 - Regresión de F6: A53–A62 y el caso A64 pasaron; las comprobaciones de
   sesión de **A64 quedaron parciales** por el mismo motivo.
 - Regresión de F5: A41–A51 pasaron y **A52 quedó parcial** por el mismo
@@ -59,7 +62,8 @@ No ejecutes Crimson WM sobre una sesión gráfica real.
   cierra la maestra, la siguiente ocupa su lugar; una ventana que vuelve a
   mapearse entra al final.
 - Los diálogos y las ventanas transitorias quedan flotantes, por encima del
-  mosaico, con la geometría que piden.
+  mosaico, con el tamaño que piden. Desde F8, cada diálogo se centra sobre
+  su ventana principal salvo que pida una posición (ver «Diálogos»).
 - Una ventana en mosaico no puede cambiar su posición ni su tamaño: el WM
   deniega la petición y le comunica su geometría real (ICCCM).
 - Sin bordes ni márgenes, y con una proporción fija del 50 %.
@@ -142,8 +146,8 @@ Detalles, casos límite y limitaciones en el ADR 0006.
 - Cada escritorio tiene sus propias ventanas, su mosaico master-stack y su
   historial de foco; `Mod4+j`, `Mod4+k` y `Mod4+Shift+Return` solo actúan
   en el activo. Cambiar al escritorio activo no hace nada.
-- Las ventanas nuevas, también los diálogos, aparecen en el escritorio
-  activo. Al arrancar, las ventanas existentes van al escritorio 1.
+- Las ventanas nuevas aparecen en el escritorio activo; desde F8, un
+  diálogo va al de su ventana principal (ver «Diálogos»). Al arrancar, las ventanas existentes van al escritorio 1.
 - Las ventanas de los demás escritorios se ocultan (se desmapean): sus
   aplicaciones siguen en marcha. Una ventana oculta que pide mostrarse sigue
   oculta, sin cambiar de escritorio ni robar el foco.
@@ -209,7 +213,8 @@ píxel a píxel.*
   orden no cambia.
 - **Flotante:** al salir recupera exactamente su posición, tamaño y borde.
 - **Pila:** la ventana sube cuando tiene el foco. Si se enfoca otra de su
-  escritorio (por ejemplo, un diálogo), baja para que esa se vea.
+  escritorio, baja para que esa se vea; desde F8, si es un diálogo suyo,
+  sigue arriba con el diálogo encima.
 - **Escritorios:**
   - como mucho una ventana a pantalla completa por escritorio: la última
     petición gana;
@@ -230,13 +235,44 @@ Fuente editable: `docs/images/crimson-wm-f7-fullscreen.svg`.*
 
 Detalles, casos límite y limitaciones en el ADR 0009.
 
+## Diálogos (F8)
+
+![Captura real en Xvfb: dos ventanas en master-stack; un diálogo de la izquierda, centrado sobre ella y enfocado; y la principal a pantalla completa con su diálogo encima](docs/images/crimson-wm-f8-comparison.png)
+
+*Captura auténtica de Crimson WM en un Xvfb aislado de 1280 × 720 (prueba
+A86): volcados de `xwd -root` sin retoques. Los rótulos de foco y pila se
+leyeron del servidor en cada momento.*
+
+- Un diálogo (`WM_TRANSIENT_FOR`) aparece **centrado sobre su ventana
+  principal** y encima de ella, salvo que la aplicación pida una posición.
+- **Escritorio:** va al de su principal. Si ese escritorio no está a la
+  vista, el diálogo espera allí oculto, sin cambiar de escritorio ni quitar
+  el foco.
+- **Mover** una ventana a otro escritorio se lleva sus diálogos; mover un
+  diálogo se lleva los suyos.
+- **Al cerrar** un diálogo, el foco vuelve a su ventana principal si
+  sigue en el mismo escritorio.
+- **Pantalla completa:** si la ventana a pantalla completa abre un diálogo,
+  este queda encima y visible.
+- **Valores inválidos** (la raíz, la propia ventana, una ventana
+  desconocida o un ciclo): la ventana queda como una flotante normal, y el
+  WM registra el motivo.
+- Aún no hay diálogos modales ni grupos de ventanas.
+
+![Diagrama de F8: propietario declarado y efectivo, pila jerárquica, escritorios, movimiento, foco, centrado y familia a pantalla completa](docs/images/crimson-wm-f8-dialogs.png)
+
+*Diagrama técnico elaborado a partir del código de F8; no es una captura.
+Fuente editable: `docs/images/crimson-wm-f8-dialogs.svg`.*
+
+Detalles, casos límite y limitaciones en el ADR 0010.
+
 ## Arranque y eventos
 
 ![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, se identifica (WM_S0 y EWMH), adopta las ventanas visibles, atiende los eventos de mosaico, foco, escritorios y cierre y lanza programas sin shell; :0 se rechaza](docs/images/crimson-wm-overview.svg)
 
 *Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 a
-0009. No es una captura ni demuestra una ejecución; los resultados de las
-pruebas están en los ADR 0003 a 0009.*
+0010. No es una captura ni demuestra una ejecución; los resultados de las
+pruebas están en los ADR 0003 a 0010.*
 
 ## Principios
 
@@ -288,7 +324,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U18)
+### Unitarias (U1–U20)
 
 ```sh
 cargo test --locked
@@ -440,10 +476,34 @@ tests/acceptance/f7/run.sh [BINARIO]
   directorio nuevo `crimson-f7.XXXXXX` dentro de `$TMPDIR` (o de `/tmp`),
   que el arnés no borra.
 
+### Aceptación de F8 (A76–A87)
+
+```sh
+cargo build --locked --examples
+tests/acceptance/f8/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas, código de salida, aislamiento y
+  programas falsos que los arneses de F5–F7.
+- `test-client` también crea diálogos (`--transient-for`), con pistas de
+  posición (`--position-hint`), un color de fondo (`--background`) o un
+  mapeo diferido (`--map-delay`).
+- A86 hace la captura real (`xwd -root`) y compone y valida la comparación.
+  La imagen del repositorio procede de esa prueba.
+- A87 equivale a A9 y queda siempre parcial.
+- Desde F8-B.1, las comprobaciones de residuos de todas las fases solo
+  cuentan los Xvfb, locks, sockets y directorios temporales del propio
+  arnés: cada caso anota su Xvfb en `xvfb-propios.tsv`. Los Xvfb de otros
+  programas se registran como ajenos y no hacen fallar la prueba (ADR
+  0010).
+- Los resultados, con las capturas sin componer, se guardan en un
+  directorio nuevo `crimson-f8.XXXXXX` dentro de `$TMPDIR` (o de `/tmp`),
+  que el arnés no borra.
+
 ### Imágenes de los diagramas
 
 ```sh
-tools/render-svg.py docs/images/crimson-wm-f7-fullscreen.svg docs/images/crimson-wm-f7-fullscreen.png --scale 2
+tools/render-svg.py docs/images/crimson-wm-f8-dialogs.svg docs/images/crimson-wm-f8-dialogs.png --scale 2
 ```
 
 Renderiza un SVG a PNG con las bibliotecas del sistema (librsvg y cairo),
@@ -490,6 +550,8 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
 - `docs/adr/0008-compatibilidad-icccm-ewmh.md`: compatibilidad ICCCM/EWMH
   de F6.
 - `docs/adr/0009-pantalla-completa.md`: pantalla completa de F7.
+- `docs/adr/0010-dialogos-transitorios.md`: diálogos y ventanas
+  transitorias de F8.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior

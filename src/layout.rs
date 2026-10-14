@@ -16,6 +16,25 @@ pub struct Rect {
     pub height: u16,
 }
 
+/// Posición (x, y) de una ventana de `width` × `height` con borde `border`
+/// centrada sobre `over` y dentro de `area` (ADR 0010). Si no cabe en el
+/// área, queda en su esquina superior izquierda. Se calcula en `i32`, sin
+/// desbordamientos, y el resultado cabe en `i16`.
+pub fn center(width: u16, height: u16, border: u16, over: Rect, area: Rect) -> (i16, i16) {
+    let axis = |start: i16, size: u16, over_start: i16, over_size: u16, outer: u16| {
+        let outer = i32::from(outer) + 2 * i32::from(border);
+        let wanted = i32::from(over_start) + (i32::from(over_size) - outer) / 2;
+        let min = i32::from(start);
+        let max = (min + i32::from(size) - outer).max(min);
+        let value = wanted.clamp(min, max);
+        i16::try_from(value).unwrap_or(start)
+    };
+    (
+        axis(area.x, area.width, over.x, over.width, width),
+        axis(area.y, area.height, over.y, over.height, height),
+    )
+}
+
 /// Geometría de `count` ventanas en mosaico, en el orden recibido: la
 /// primera ocupa la columna maestra, a la izquierda, y el resto se reparte
 /// la altura de la columna derecha (la pila).
@@ -95,6 +114,52 @@ fn to_u16(value: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // U20: centrado de diálogos.
+
+    #[test]
+    fn centra_sobre_la_ventana() {
+        let over = Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 720,
+        };
+        assert_eq!(center(300, 200, 0, over, SCREEN), (170, 260));
+        // El borde cuenta en el tamaño exterior.
+        assert_eq!(center(300, 200, 5, over, SCREEN), (165, 255));
+        // Sobre la pila de la derecha.
+        let stack = Rect {
+            x: 640,
+            y: 360,
+            width: 640,
+            height: 360,
+        };
+        assert_eq!(center(320, 240, 0, stack, SCREEN), (800, 420));
+    }
+
+    #[test]
+    fn centrado_dentro_del_area() {
+        // Una ventana mayor que su principal no sale del área.
+        let small = Rect {
+            x: 1200,
+            y: 680,
+            width: 80,
+            height: 40,
+        };
+        assert_eq!(center(400, 300, 0, small, SCREEN), (880, 420));
+        // Mayor que el área: esquina superior izquierda.
+        assert_eq!(center(2000, 1000, 0, small, SCREEN), (0, 0));
+        // Valores extremos, sin desbordamientos.
+        let far = Rect {
+            x: i16::MAX,
+            y: i16::MIN,
+            width: u16::MAX,
+            height: u16::MAX,
+        };
+        assert_eq!(center(u16::MAX, u16::MAX, u16::MAX, far, SCREEN), (0, 0));
+        assert_eq!(center(10, 10, 0, far, SCREEN), (1270, 0));
+    }
 
     fn rect(x: i16, y: i16, width: u16, height: u16) -> Rect {
         Rect {
