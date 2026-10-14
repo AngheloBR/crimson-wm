@@ -2,8 +2,9 @@
 # Pruebas de aceptación A1–A9 de F1 (ADR 0003), solo con Xvfb.
 #
 # Uso: tests/acceptance/f1/run.sh [BINARIO]
-#   BINARIO: por defecto target/debug/crimson-wm, que debe estar compilado y
-#   ser más reciente que src/, Cargo.toml y Cargo.lock (`cargo build`).
+#   BINARIO: un crimson-wm concreto, que se usa tal cual. Sin él, el arnés
+#   pide el binario a Cargo (`cargo build --locked --offline`), que lo
+#   compila si ha quedado obsoleto (f1/binaries.sh).
 #
 # Requisitos (Debian 13): xvfb (xvfb-run, Xvfb), x11-utils (xprop,
 # xlsatoms, xwininfo, xmessage), xauth, xdotool, util-linux (unshare,
@@ -38,16 +39,11 @@ if ((${#missing[@]})); then
     exit 2
 fi
 
-BIN=${1:-$ROOT/target/debug/crimson-wm}
-if [[ ! -x $BIN ]]; then
-    echo "run.sh: no existe el binario $BIN (ejecuta cargo build)" >&2
-    exit 2
-fi
-BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
-if (($# == 0)) && [[ -n $(find "$ROOT/src" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" -newer "$BIN" -print -quit) ]]; then
-    echo "run.sh: $BIN es anterior a las fuentes (ejecuta cargo build)" >&2
-    exit 2
-fi
+# Binario del WM: lo decide Cargo, salvo que se pase uno expresamente
+# (P1-B.1). Antes de crear ningún directorio, servidor o cliente X.
+# shellcheck source=binaries.sh
+source "$F"/binaries.sh
+ensure_binaries "$ROOT" 0 "${1:-}" || exit 2
 
 # Nada de lo que se ejecute aquí debe heredar el acceso a la sesión real.
 unset DISPLAY XAUTHORITY CRIMSON_SANDBOX_TOKEN

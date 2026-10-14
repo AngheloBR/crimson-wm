@@ -1,717 +1,214 @@
 # Crimson WM
 
-Gestor de ventanas para X11, escrito en Rust y dirigido inicialmente a
-Debian 13 (Trixie), orientado a la gestión de ventanas en mosaico. Por ahora
-es un prototipo con un único diseño, master-stack, ocho escritorios
-virtuales, pantalla completa, diálogos que siguen a su ventana principal,
-tipos de ventana EWMH con paneles y fondos fijos en todos los escritorios,
-paneles que reservan espacio en los bordes y compatibilidad parcial con
-ICCCM y EWMH (ver «Estado»).
-
-## Estado
-
-Fase F10: struts y área de trabajo (`_NET_WM_STRUT`,
-`_NET_WM_STRUT_PARTIAL` y `_NET_WORKAREA`), sobre los tipos de ventana EWMH,
-las ventanas fijas y las capas de apilamiento, los diálogos y ventanas transitorias, la
-pantalla completa, la compatibilidad ICCCM/EWMH, los escritorios virtuales,
-el lanzamiento de aplicaciones, el foco por teclado y el mosaico
-master-stack. **Todavía no es un gestor de ventanas utilizable:** solo
-arranca en un servidor X de prueba que supere las salvaguardas del ADR
-0003, coloca las ventanas normales en mosaico, deja flotantes los diálogos
-y los mantiene con su ventana principal, deja paneles, avisos y fondos
-fijos en su capa y en todos los escritorios, deja que los paneles reserven
-su borde, gestiona el foco con el teclado,
-reparte las ventanas en ocho escritorios, pone una ventana a pantalla
-completa, cierra ventanas, lanza seis programas fijos y termina con el
-atajo provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones,
-panel propio, varios monitores ni configuración.
-
-Las cuatro capas de salvaguardas están implementadas desde P4
-(2026-10-11). Últimos resultados registrados, todos del 2026-10-14 en Xvfb
-sobre el binario de depuración de F10 (detalles y limitaciones en los ADR
-0003 a 0012):
-
-- Pruebas unitarias U1–U22 (139 pruebas de `cargo test`): pasaron.
-- Aceptación de F10: A104–A119 pasaron y **A120 quedó parcial**, porque la
-  consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
-  programas falsos, nunca las aplicaciones reales.
-- Regresión de F9: A88–A102 pasaron y **A103 quedó parcial** por el mismo
-  motivo.
-- Regresión de F8: A76–A86 pasaron y **A87 quedó parcial** por el mismo
-  motivo.
-- Regresión de F7: A63 y A65–A74 pasaron y **A75 quedó parcial** por el
-  mismo motivo.
-- Regresión de F6: A53–A62 y el caso A64 pasaron; las comprobaciones de
-  sesión de **A64 quedaron parciales** por el mismo motivo.
-- Regresión de F5: A41–A51 pasaron y **A52 quedó parcial** por el mismo
-  motivo.
-- Regresión de F4: A33–A39 pasaron y **A40 quedó parcial** por el mismo
-  motivo.
-- Regresión de F3: A22–A31 pasaron y **A32 quedó parcial** por el mismo
-  motivo.
-- Regresión de F2: A10–A20 pasaron y **A21 quedó parcial** por el mismo
-  motivo.
-- Regresión de F1: A1–A8 pasaron y **A9 quedó parcial** por el mismo
-  motivo.
-
-Son los resultados de esas ejecuciones concretas, no una garantía para
-cambios posteriores: las pruebas deben repetirse tras cada cambio.
-
-No ejecutes Crimson WM sobre una sesión gráfica real.
-
-## Diseño master-stack (F2)
-
-![Ilustración conceptual de una pantalla de 1280 × 720 con tres ventanas: la ventana 1 ocupa el área master, la mitad izquierda (640 × 720), y las ventanas 2 y 3 se reparten el área stack, la mitad derecha (640 × 360 cada una)](docs/images/crimson-wm-master-stack.png)
-
-*Ilustración conceptual, no una captura. Fuente editable:
-`docs/images/crimson-wm-master-stack.svg`.*
-
-- La primera ventana ocupa el área master, la mitad izquierda. Las demás,
-  en orden de llegada, se reparten la altura de la mitad derecha.
-- Al abrir, cerrar o desmapear una ventana, el mosaico se reorganiza. Si se
-  cierra la maestra, la siguiente ocupa su lugar; una ventana que vuelve a
-  mapearse entra al final.
-- Los diálogos y las ventanas transitorias quedan flotantes, por encima del
-  mosaico, con el tamaño que piden. Desde F8, cada diálogo se centra sobre
-  su ventana principal salvo que pida una posición (ver «Diálogos»).
-- Una ventana en mosaico no puede cambiar su posición ni su tamaño: el WM
-  deniega la petición y le comunica su geometría real (ICCCM).
-- Sin bordes ni márgenes, y con una proporción fija del 50 %.
-
-Detalles, casos límite y limitaciones en el ADR 0004.
-
-![Captura de prueba en Xvfb: xlogo ocupa la mitad izquierda, y xclock y xeyes se reparten la mitad derecha](docs/images/crimson-wm-f2-captura-xvfb.png)
-
-*Captura de prueba tomada con `xwd` en un Xvfb aislado de 1280 × 720, con
-Crimson WM F2 en marcha: `xlogo` como maestra, y `xclock` y `xeyes` en la
-pila. No es una sesión de escritorio. El negro alrededor de los ojos es la
-raíz del servidor: `xeyes` usa una ventana con forma.*
-
-## Foco y atajos (F3)
-
-| Atajo | Acción |
-|---|---|
-| `Mod4+j` / `Mod4+k` | Enfoca la ventana siguiente o anterior: primero el mosaico (maestra y pila de arriba abajo) y después las flotantes, con vuelta al principio |
-| `Mod4+Shift+Return` | La ventana enfocada pasa a maestra; si ya lo es, se intercambia con la segunda |
-| `Mod4+Shift+Escape` | Termina el WM (atajo provisional) |
-| `Mod4+w` | Pide a la ventana enfocada que se cierre (`WM_DELETE_WINDOW`; desde F6) |
-| `Mod4+Shift+w` | Cierra a la fuerza el cliente de la ventana enfocada: **todas** sus ventanas (`KillClient`; desde F6) |
-| `Mod4+f` | Alterna la pantalla completa de la ventana enfocada (desde F7) |
-
-Combinaciones reservadas para fases posteriores, **todavía sin implementar
-ni capturar**: `Mod4+h` y `Mod4+l` (foco a izquierda y derecha). Las de
-aplicaciones se implementaron en F4 (ver «Lanzamiento de aplicaciones») y
-las de cierre en F6 (ver «Compatibilidad ICCCM/EWMH»). Desde F5, el foco,
-la navegación y el Zoom son por escritorio (ver «Escritorios virtuales»).
-
-- Una ventana nueva recibe el foco al abrirse, salvo los paneles, avisos,
-  menús y similares, que nunca lo reciben.
-- Al cerrarse o desmapearse la ventana enfocada, el foco vuelve a la usada
-  justo antes; al cerrar un diálogo, a su ventana principal.
-- El foco respeta los modelos de entrada de ICCCM (incluido el mensaje
-  `WM_TAKE_FOCUS`), y el WM sigue los cambios de foco que hacen los propios
-  clientes.
-- La ventana activa se publica en `_NET_ACTIVE_WINDOW`; desde F6 el soporte
-  EWMH está declarado y las herramientas la leen.
-
-Detalles, casos límite y limitaciones en el ADR 0005.
-
-## Lanzamiento de aplicaciones (F4)
-
-| Atajo | Programa |
-|---|---|
-| `Mod4+Return` | `kitty` |
-| `Mod4+d` | `rofi -show drun` |
-| `Mod4+e` | `thunar` |
-| `Mod4+b` | `firefox` |
-| `Mod4+n` | `kitty -e nvim` |
-| `Print` | `flameshot gui` |
-
-- La tabla es fija hasta la fase de configuración. Cada programa se
-  ejecuta con su lista `argv`, sin shell ni expansión, buscándolo en el
-  `PATH` del WM.
-- Lanzar no bloquea el WM: un hilo lanza el programa y lo espera, así que
-  no quedan procesos zombis. Como máximo hay 64 programas supervisados a la
-  vez.
-- Si el programa no existe o no se puede ejecutar, el error se registra y
-  el WM sigue. Si falta la tecla de un atajo de lanzamiento, el WM avisa y
-  arranca sin él.
-- Una tecla mantenida o una doble pulsación en menos de 300 ms lanza un
-  solo programa.
-- Cada programa recibe el `DISPLAY` del servidor que gestiona el WM, sin
-  `CRIMSON_SANDBOX_TOKEN`, `WINDOWID` ni `DESKTOP_STARTUP_ID`, con la
-  entrada desde `/dev/null`, en su propio grupo de procesos y con `HOME`
-  como directorio de trabajo. Sigue en marcha cuando el WM termina.
-
-Detalles, casos límite y limitaciones en el ADR 0006.
-
-## Escritorios virtuales (F5)
-
-| Atajo | Acción |
-|---|---|
-| `Mod4+1` … `Mod4+8` | Muestra ese escritorio y enfoca su ventana más reciente |
-| `Mod4+Shift+1` … `Mod4+Shift+8` | Lleva la ventana enfocada a ese escritorio, sin cambiar al destino |
-| `Mod4+Tab` | Vuelve al escritorio anterior; repetido, alterna entre los dos |
-
-- Cada escritorio tiene sus propias ventanas, su mosaico master-stack y su
-  historial de foco; `Mod4+j`, `Mod4+k` y `Mod4+Shift+Return` solo actúan
-  en el activo. Cambiar al escritorio activo no hace nada.
-- Las ventanas nuevas aparecen en el escritorio activo; desde F8, un
-  diálogo va al de su ventana principal (ver «Diálogos»). Al arrancar, las ventanas existentes van al escritorio 1.
-- Las ventanas de los demás escritorios se ocultan (se desmapean): sus
-  aplicaciones siguen en marcha. Una ventana oculta que pide mostrarse sigue
-  oculta, sin cambiar de escritorio ni robar el foco.
-- Si el WM termina por cualquier motivo, también con `SIGTERM` o `SIGKILL`,
-  el servidor vuelve a mostrar las ventanas ocultas (save-set de X11); las
-  que sus aplicaciones habían retirado no reaparecen.
-- Se publican `WM_STATE` (normal u oculta), `_NET_NUMBER_OF_DESKTOPS`,
-  `_NET_CURRENT_DESKTOP` y `_NET_WM_DESKTOP` como compatibilidad parcial: el
-  WM no declara soporte EWMH ni atiende los mensajes de los pagers.
-- Un solo monitor, sin ventanas en todos los escritorios (sticky) ni
-  escritorios dinámicos.
-
-Detalles, casos límite y limitaciones en el ADR 0007.
-
-## Compatibilidad ICCCM/EWMH (F6)
-
-![Diagrama de F6: arranque e identificación del WM, mensajes ICCCM y EWMH entre las aplicaciones, el servidor X11 y Crimson WM, políticas de las peticiones externas, salida y funciones aplazadas](docs/images/crimson-wm-f6-icccm-ewmh.png)
-
-*Diagrama técnico elaborado a partir del código de F6; no es una captura.
-Fuente editable: `docs/images/crimson-wm-f6-icccm-ewmh.svg`.*
-
-- **Identificación:** solo después de superar las salvaguardas, el WM crea
-  una ventana de comprobación y, con el servidor capturado, adquiere la
-  selección `WM_S0` y publica `_NET_SUPPORTING_WM_CHECK` y `_NET_SUPPORTED`.
-  Así lo reconocen paneles, lanzadores y xdotool.
-- **Salvaguardas:** si ya hay otro gestor (la propiedad, aunque sea
-  obsoleta, o `WM_S0` con propietario), el WM no arranca (código 12). Si
-  otro cliente le quita `WM_S0`, termina sin intentar recuperarla. Tras
-  `SIGTERM` o `SIGKILL` la propiedad queda obsoleta y el siguiente arranque
-  en ese servidor se rechaza hasta borrarla a mano
-  (`xprop -root -remove _NET_SUPPORTING_WM_CHECK`, solo en el servidor de
-  prueba).
-- **Lo que se declara:** listas de ventanas (`_NET_CLIENT_LIST` y
-  `_NET_CLIENT_LIST_STACKING`), ventana activa, escritorios, cierre y los
-  tipos de ventana normal, diálogo, utilidad y barra de herramientas. Nada
-  más en F6. Desde F7 se declara la pantalla completa y desde F9 los tipos
-  splash, menú, panel (`DOCK`), escritorio (`DESKTOP`) y aviso (ver «Tipos
-  de ventana»). Los paneles con espacio reservado, las ventanas sticky y
-  otras funciones siguen pendientes.
-- **Peticiones externas:**
-  - un paginador puede cambiar de escritorio y enfocar una ventana;
-  - una aplicación solo puede enfocar ventanas del escritorio activo;
-  - se pueden mover ventanas entre los ocho escritorios;
-  - el cierre por petición es siempre cooperativo: una aplicación que no
-    admite `WM_DELETE_WINDOW` nunca se termina a la fuerza por una petición
-    externa.
-- `WM_TAKE_FOCUS` lleva siempre una marca de tiempo real, y los cambios de
-  `WM_HINTS` y `WM_PROTOCOLS` se tienen en cuenta.
-
-Detalles, casos límite y limitaciones en el ADR 0008.
-
-## Pantalla completa (F7)
-
-![Captura real en Xvfb: tres ventanas xlogo en master-stack; la segunda a pantalla completa con Mod4+f; y de nuevo la disposición original](docs/images/crimson-wm-f7-comparison.png)
-
-*Captura auténtica de Crimson WM en un Xvfb aislado de 1280 × 720 (prueba
-A74): volcados de `xwd -root` sin retoques. Los paneles 1 y 3 son idénticos
-píxel a píxel.*
-
-- `Mod4+f` alterna la pantalla completa de la ventana enfocada. Las
-  aplicaciones pueden pedirla con `_NET_WM_STATE` (añadir, quitar o
-  alternar), también antes de mostrar su ventana.
-- **En mosaico:** la ventana sale temporalmente del master-stack, y las
-  demás se reparten el espacio detrás. Al salir recupera su hueco y el
-  orden no cambia.
-- **Flotante:** al salir recupera exactamente su posición, tamaño y borde.
-- **Pila:** la ventana sube cuando tiene el foco. Si se enfoca otra de su
-  escritorio, baja para que esa se vea; desde F8, si es un diálogo suyo,
-  sigue arriba con el diálogo encima.
-- **Escritorios:**
-  - como mucho una ventana a pantalla completa por escritorio: la última
-    petición gana;
-  - el estado viaja con la ventana al moverla;
-  - una petición para una ventana de otro escritorio no cambia el
-    escritorio activo ni el foco.
-- **Salida:**
-  - al salir normalmente, todas las ventanas recuperan su geometría;
-  - tras `SIGTERM` o `SIGKILL` no hay restauración, y una ventana flotante
-    puede volver con un tamaño de respaldo (centrada, 2/3 de la pantalla).
-- El WM solo gestiona el estado `FULLSCREEN`: conserva, sin
-  interpretarlos, los demás estados que ponga la aplicación.
-
-![Diagrama de F7: estados normal y pantalla completa, qué se guarda y qué se calcula, pila y foco, peticiones _NET_WM_STATE, salida y recuperación](docs/images/crimson-wm-f7-fullscreen.png)
-
-*Diagrama técnico elaborado a partir del código de F7; no es una captura.
-Fuente editable: `docs/images/crimson-wm-f7-fullscreen.svg`.*
-
-Detalles, casos límite y limitaciones en el ADR 0009.
-
-## Diálogos (F8)
-
-![Captura real en Xvfb: dos ventanas en master-stack; un diálogo de la izquierda, centrado sobre ella y enfocado; y la principal a pantalla completa con su diálogo encima](docs/images/crimson-wm-f8-comparison.png)
-
-*Captura auténtica de Crimson WM en un Xvfb aislado de 1280 × 720 (prueba
-A86): volcados de `xwd -root` sin retoques. Los rótulos de foco y pila se
-leyeron del servidor en cada momento.*
-
-- Un diálogo (`WM_TRANSIENT_FOR`) aparece **centrado sobre su ventana
-  principal** y encima de ella, salvo que la aplicación pida una posición.
-- **Escritorio:** va al de su principal. Si ese escritorio no está a la
-  vista, el diálogo espera allí oculto, sin cambiar de escritorio ni quitar
-  el foco.
-- **Mover** una ventana a otro escritorio se lleva sus diálogos; mover un
-  diálogo se lleva los suyos.
-- **Al cerrar** un diálogo, el foco vuelve a su ventana principal si
-  sigue en el mismo escritorio.
-- **Pantalla completa:** si la ventana a pantalla completa abre un diálogo,
-  este queda encima y visible.
-- **Valores inválidos** (la raíz, la propia ventana, una ventana
-  desconocida o un ciclo): la ventana queda como una flotante normal, y el
-  WM registra el motivo.
-- Aún no hay diálogos modales ni grupos de ventanas.
-
-![Diagrama de F8: propietario declarado y efectivo, pila jerárquica, escritorios, movimiento, foco, centrado y familia a pantalla completa](docs/images/crimson-wm-f8-dialogs.png)
-
-*Diagrama técnico elaborado a partir del código de F8; no es una captura.
-Fuente editable: `docs/images/crimson-wm-f8-dialogs.svg`.*
-
-Detalles, casos límite y limitaciones en el ADR 0010.
-
-## Tipos de ventana (F9)
-
-![Captura real en Xvfb: con F8, una ventana DESKTOP tapa el mosaico; con F9, queda al fondo con el DOCK encima; y en el escritorio 2 el DOCK sigue visible y un menú conserva su posición](docs/images/crimson-wm-f9-comparison.png)
-
-*Capturas auténticas en Xvfb aislados de 1280 × 720 (pruebas A101 y A102):
-el primer panel con el binario de F8 (commit 195938d), los otros dos con
-el de F9. Volcados de `xwd -root` sin retoques; los rótulos de foco y pila
-se leyeron del servidor.*
-
-- **Clasificación:** cuenta el primer tipo reconocido de
-  `_NET_WM_WINDOW_TYPE`. Sin tipo reconocido, una ventana transitoria es un
-  diálogo y las demás van al mosaico, como antes.
-- **`DOCK` y `NOTIFICATION`:** ventanas fijas, visibles en todos los
-  escritorios, por encima del mosaico y de las flotantes, sin foco y fuera
-  de `Mod4+j`/`Mod4+k`.
-- **`DESKTOP`:** ventana fija, siempre por debajo del mosaico.
-- **Menús, tooltips y splash gestionados:** flotantes, sin foco y en la
-  posición que piden, aunque sean transitorios.
-- **Pantalla completa:** solo ventanas normales, diálogos, utilidades,
-  barras de herramientas y ventanas sin tipo. Con el foco queda por encima
-  del panel; sin él, por encima del fondo.
-- **Capas**, de abajo arriba: `DESKTOP`, mosaico, flotantes, `DOCK` y
-  `NOTIFICATION`, y la pantalla completa enfocada.
-- **Un cambio de tipo** con la ventana ya visible se ignora hasta que la
-  aplicación la retire y la vuelva a mostrar.
-- **Aún no:** no hay `_NET_WM_STATE_ABOVE`/`BELOW` ni ventanas sticky
-  generales, ni Crimson Panel. Desde F10 los paneles sí reservan espacio
-  (ver «Struts y área de trabajo»).
-
-![Diagrama de F9: flujo de clasificación, los 14 tipos, capas de apilamiento y pantalla completa, ventanas fijas en dos escritorios y lo aplazado](docs/images/crimson-wm-f9-window-types.png)
-
-*Diagrama técnico elaborado a partir del código de F9; no es una captura.
-Fuente editable: `docs/images/crimson-wm-f9-window-types.svg`.*
-
-Detalles, casos límite y limitaciones en el ADR 0011.
-
-## Struts y área de trabajo (F10)
-
-![Captura real en Xvfb: con F9, el panel superior tapa la parte de arriba del mosaico; con F10, el mosaico empieza debajo de la franja reservada; y, al pasar el panel abajo con su reserva, el mosaico se reajusta](docs/images/crimson-wm-f10-comparison.png)
-
-*Capturas auténticas en Xvfb aislados de 1280 × 720 (pruebas A118 y A119):
-el primer panel con el binario de F9 (commit 2b2df85), los otros dos con
-el de F10. Volcados de `xwd -root` sin retoques; los rótulos de pila y
-área se leyeron del servidor.*
-
-- **Reservas:** un panel (`DOCK`) puede reservar su borde con
-  `_NET_WM_STRUT_PARTIAL` o, si no la tiene, con `_NET_WM_STRUT`. Las demás
-  ventanas no reservan nada.
-- **Mosaico:** usa el área de trabajo, la pantalla menos las reservas, y se
-  reajusta cuando un panel aparece, cambia su reserva o desaparece. Las
-  ventanas flotantes no se mueven.
-- **Varios paneles:** en cada borde cuenta la reserva mayor, no la suma.
-- **Pantalla completa:** ocupa la pantalla entera, también bajo los
-  paneles. Los diálogos nuevos se centran dentro del área de trabajo.
-- **`_NET_WORKAREA`:** el área de trabajo, igual en los ocho escritorios.
-  Se borra al salir.
-- **Valores defectuosos o excesivos:** se registran y no reservan nada, o se
-  limitan para que siempre quede al menos un píxel en cada eje. Si
-  `_NET_WM_STRUT_PARTIAL` es defectuosa, no se usa `_NET_WM_STRUT` en su
-  lugar.
-- **Aún no:** varios monitores, áreas no rectangulares (el hueco junto a un
-  panel parcial no se aprovecha), márgenes ni Crimson Panel.
-
-![Diagrama de F10: lectura de los struts, las cuatro reservas y un tramo parcial, varios paneles, pantalla física frente a área de trabajo y los ocho escritorios, valores inválidos y extremos, y lo aplazado](docs/images/crimson-wm-f10-workarea.png)
-
-*Diagrama técnico elaborado a partir del código de F10; no es una
-captura. Fuente editable: `docs/images/crimson-wm-f10-workarea.svg`.*
-
-Detalles, casos límite y limitaciones en el ADR 0012.
-
-## Arranque y eventos
-
-![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, se identifica (WM_S0 y EWMH), adopta las ventanas visibles, atiende los eventos de mosaico, foco, escritorios y cierre y lanza programas sin shell; :0 se rechaza](docs/images/crimson-wm-overview.svg)
-
-*Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 a
-0010. No es una captura ni demuestra una ejecución; los resultados de las
-pruebas están en los ADR 0003 a 0010.*
-
-## Principios
-
-- Núcleo pequeño y correcto antes que muchas funciones incompletas.
-- Sin GTK ni otros componentes de escritorio como dependencia del núcleo.
-- `unsafe` prohibido en el código propio (`unsafe_code = "forbid"`); el de
-  las dependencias se auditará por separado (ver `docs/dependencies.md`).
-- Configuración declarativa (TOML), validada por completo antes de
-  aplicarse y con recarga transaccional.
-- Atajos ejecutados como lista `argv`, nunca mediante una shell implícita.
-- Sin reparenting ni compositor propio en la primera versión.
-
-## Requisitos
-
-### Paquetes Debian
-
-| Paquete | Herramientas que aporta | Uso | Estado |
-|---|---|---|---|
-| `rustc`, `cargo`, `rustfmt`, `rust-clippy` (1.85.1) | `rustc`, `cargo`, `rustfmt`, `cargo clippy` | Compilación y análisis estático | Instalado |
-| `gcc`, `binutils`, `libc6-dev` | `gcc`, `cc` (alternativa del sistema que apunta a `gcc`), `ld` | Enlazado (dependencias de `rustc`; enlazador por defecto pendiente de confirmar al compilar) | Instalado |
-| `xvfb` | `Xvfb`, `xvfb-run` | Servidor X sin pantalla para pruebas automatizadas | Instalado |
-| `xauth` | `xauth` | Cookies de autenticación de los servidores de prueba | Instalado |
-| `util-linux` | `mcookie`, `unshare` | Valores aleatorios para cookies y marca de sandbox; aislamiento sin privilegios de A1, A2 y A3a | Instalado |
-| `bsdextrautils` | `column` | Tabla de resultados del arnés de aceptación | Instalado |
-| `x11-utils` | `xprop`, `xwininfo`, `xmessage`, `xlsatoms`, `xev` | Clientes y comprobaciones de prueba | Instalado |
-| `x11-apps` | `xlogo`, `xclock`, `xwd` | Clientes de prueba de F2 (A19), F3 (A28) y F7 (A74), y la captura real de A74 | Instalado |
-| `imagemagick` | `magick` | Conversión y composición de la captura de A74, y sus validaciones de píxeles | Instalado |
-| `xdotool` | `xdotool` | Simulación de teclado en pruebas | Instalado |
-| `procps` | `pgrep`, `ps` | Comprobación de procesos (`ps`: hijos del WM en F4) | Instalado |
-| `diffutils` | `cmp` | Verificación de los programas falsos de F4 | Instalado |
-| `x11-xserver-utils` | `xmodmap` | Quitar `Print` del mapa de teclado de un Xvfb de prueba (A35) | Instalado |
-| `shellcheck` | `shellcheck` | Análisis de los scripts de prueba | Instalado |
-| `bash`, `coreutils`, `findutils`, `grep`, `mawk`, `mount` | `bash`, `timeout`, `mktemp`, `find`, `grep`, `awk`, `mount` | Ejecución del arnés de aceptación | Instalado (paquetes base) |
-| `xserver-xephyr` | `Xephyr` | Pruebas visuales | **Aplazado** (no instalado) |
-
-### Herramientas opcionales o futuras
-
-| Herramienta | Uso | Estado |
+**Crimson WM: an experimental, safety-first tiling window manager for X11,
+written in Rust (pre-alpha).**
+
+Crimson WM is a small X11 window manager built incrementally, with each
+phase documented in an architecture decision record (ADR) and verified by
+automated tests in isolated Xvfb servers. It targets Debian 13 (Trixie) and
+the Rust toolchain that Debian ships.
+
+> [!WARNING]
+> **Pre-alpha. Not ready for daily use.** Crimson WM has no mouse support,
+> no configuration file and a fixed set of key bindings and programs. By
+> design it **refuses to start on display `:0`** and only runs on test
+> servers that pass its safeguards. Do not try to use it as your session's
+> window manager.
+
+![Real Xvfb captures: with F9 a top dock covers the tiled windows; with F10 the dock reserves its 40 px strip; when the dock moves to the bottom, the tiling adjusts](docs/images/crimson-wm-f10-comparison.png)
+
+*Authentic `xwd` captures from isolated 1280×720 Xvfb servers (acceptance
+tests A118 and A119): panel 1 runs the F9 binary, panels 2 and 3 the F10
+binary. Only labels were added.*
+
+## Status
+
+Phases F1–F10 are implemented and recorded. In the most recent recorded
+runs (2026-10-14, Debian 13, debug build), all 139 unit tests passed and
+every acceptance battery from F1 to F10 passed. In each battery, one check
+is skipped on purpose because it would query the real display `:0`. One
+F3 run failed once while preparing its Xvfb server and passed when
+repeated; the cause has not been determined (see the technical
+documentation). Results of specific runs are not a guarantee for later
+changes; see the ADRs for details.
+
+| Phase | Feature | Details |
 |---|---|---|
-| `cargo-deny`, `cargo-audit` | Licencias y avisos de seguridad de dependencias | Aplazadas hasta que el árbol de dependencias lo justifique |
-| `x11-apps` (`xeyes`) | Solo documentación: la captura de prueba de F2 | Instalado |
-| `librsvg2-2`, `libcairo2`, `python3` | Solo documentación: renderizar fielmente los SVG a PNG con `tools/render-svg.py` (librsvg y cairo llamados con `ctypes`; ADR 0009). El renderizador interno de ImageMagick no dibuja los trazos | Instalados |
-| `ss` (`iproute2`) | Posible comprobación adicional de a qué servidor se conecta el WM (`ss -xp`, ver ADR 0003). Ningún script del arnés actual la usa | Instalada; pendiente de validar |
+| F1 | Safe connection to a test X server: rejects `:0`, TCP and malformed displays; requires a sandbox token and marker; refuses to run if another window manager is present | [ADR 0003](docs/adr/0003-salvaguardas-desarrollo.md) |
+| F2 | Master-stack tiling: master column at 50%, stack on the right; dialogs float | [ADR 0004](docs/adr/0004-mosaico-master-stack.md) |
+| F3 | Keyboard focus and navigation (`Mod4+j`/`k`, `Mod4+Shift+Return`), ICCCM input models | [ADR 0005](docs/adr/0005-foco-y-atajos.md) |
+| F4 | Launching six fixed programs from key bindings, without a shell and with a sanitized environment | [ADR 0006](docs/adr/0006-lanzamiento-de-aplicaciones.md) |
+| F5 | Eight virtual desktops (`Mod4+1…8`, `Mod4+Shift+1…8`, `Mod4+Tab`) | [ADR 0007](docs/adr/0007-escritorios-virtuales.md) |
+| F6 | ICCCM/EWMH identification, cooperative close (`Mod4+w`), forced close (`Mod4+Shift+w`), validated EWMH requests, client lists | [ADR 0008](docs/adr/0008-compatibilidad-icccm-ewmh.md) |
+| F7 | Fullscreen (`Mod4+f`, `_NET_WM_STATE_FULLSCREEN`) with geometry restore | [ADR 0009](docs/adr/0009-pantalla-completa.md) |
+| F8 | Dialogs (`WM_TRANSIENT_FOR`): centred on their parent, kept above it, moved with it | [ADR 0010](docs/adr/0010-dialogos-transitorios.md) |
+| F9 | EWMH window types; docks, notifications and desktop windows fixed on all desktops; stacking layers | [ADR 0011](docs/adr/0011-tipos-de-ventana-ewmh.md) |
+| F10 | `_NET_WM_STRUT`, `_NET_WM_STRUT_PARTIAL` and `_NET_WORKAREA`: docks reserve screen edges, tiling uses the work area | [ADR 0012](docs/adr/0012-struts-y-area-de-trabajo.md) |
 
-No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
+### Key bindings
 
-## Pruebas
+| Binding | Action |
+|---|---|
+| `Mod4+j` / `Mod4+k` | Focus next / previous window |
+| `Mod4+Shift+Return` | Make the focused window the master (or swap it with the second) |
+| `Mod4+f` | Toggle fullscreen |
+| `Mod4+w` | Ask the focused window to close (`WM_DELETE_WINDOW`) |
+| `Mod4+Shift+w` | Force-close the focused client (`KillClient`: closes all of its windows) |
+| `Mod4+1` … `Mod4+8` | Show that desktop |
+| `Mod4+Shift+1` … `Mod4+Shift+8` | Send the focused window to that desktop |
+| `Mod4+Tab` | Go back to the previous desktop |
+| `Mod4+Return`, `Mod4+d`, `Mod4+e`, `Mod4+b`, `Mod4+n`, `Print` | Launch `kitty`, `rofi -show drun`, `thunar`, `firefox`, `kitty -e nvim`, `flameshot gui` |
+| `Mod4+Shift+Escape` | Quit (provisional binding) |
 
-Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
-prueba aislados; ninguna se conecta con la sesión principal.
+The programs and bindings are hard-coded for now.
 
-### Unitarias (U1–U22)
+### Current limitations
+
+- No mouse support: no click to focus, no moving or resizing with the
+  pointer.
+- One layout (master-stack at 50%); no borders, gaps or decorations.
+- No configuration file; bindings and programs are fixed.
+- One screen, read once at startup: no RandR or multi-monitor support.
+- The work area is a single rectangle: space next to a partial dock is not
+  used.
+- No `_NET_WM_STATE_ABOVE`/`BELOW`, general sticky windows, application
+  rules, scratchpads, IPC or command-line control.
+- No compositor, panel or other desktop components.
+- Log messages and the detailed documentation are in Spanish.
+
+## Building
+
+Crimson WM is developed and tested on Debian 13 with Debian's Rust
+packages (rustc and cargo 1.85.1). The declared minimum supported Rust
+version is 1.85, but only 1.85.1 is tested; rustup is not used (see
+[ADR 0001](docs/adr/0001-toolchain.md)).
 
 ```sh
+sudo apt install --no-install-recommends rustc cargo rustfmt rust-clippy gcc libc6-dev
+cargo build --locked --bins --examples
+```
+
+`Cargo.lock` is versioned and all commands use `--locked`. The only direct
+dependency is [x11rb](https://github.com/psychon/x11rb) 0.14 (see
+[docs/dependencies.md](docs/dependencies.md)). `unsafe` code is forbidden in
+the crate itself.
+
+## Testing
+
+Static checks and unit tests need no X server:
+
+```sh
+cargo fmt -- --check
+cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-### Aceptación de F1 (A1–A9)
+If rustup is also installed, make sure these commands use Debian's
+toolchain, for example with `env PATH=/usr/bin:/bin cargo …`.
+
+### Acceptance tests in Xvfb
+
+Each phase has an acceptance harness under `tests/acceptance/fN/`. Every
+case starts its own Xvfb with `xvfb-run` (temporary cookie, no TCP),
+places the sandbox marker, and runs the window manager with `env -i` and a
+minimal environment. Its `PATH` is empty (F1–F3) or contains only fake
+programs (since F4), so no real application is ever launched.
 
 ```sh
-cargo build --locked
-tests/acceptance/f1/run.sh [BINARIO]
+sudo apt install --no-install-recommends xvfb xauth x11-utils x11-apps \
+    x11-xserver-utils xdotool imagemagick procps diffutils bsdextrautils shellcheck
+tests/acceptance/f10/run.sh
 ```
 
-- Sin argumento usa `target/debug/crimson-wm` y exige que sea más reciente
-  que `src/`, `Cargo.toml` y `Cargo.lock`. Con un argumento usa ese
-  binario, sin esa comprobación.
-- Se niega a ejecutarse como root y, antes de empezar, comprueba que
-  estén disponibles las órdenes de prueba que no pertenecen a los paquetes
-  base, además de `timeout`.
-- A1, A2 y A3a se ejecutan con `unshare -rmn`, sin ningún servidor X
-  visible, así que el núcleo debe permitir espacios de nombres de usuario
-  sin privilegios.
-- Las demás se ejecutan cada una en un Xvfb nuevo lanzado por `xvfb-run`
-  (ver «Servidores de prueba»).
-- La sesión principal solo se observa con `pgrep` (por defecto, `bspwm` y
-  `sxhkd`; se puede cambiar con `CRIMSON_F1_WATCH`). La consulta de la
-  raíz de `:0` se omite deliberadamente, así que A9 queda siempre parcial.
-- Los resultados se guardan en un directorio nuevo `crimson-f1.XXXXXX`
-  dentro de `$TMPDIR` (o de `/tmp` si no está definida o está vacía), que
-  se indica al final. El arnés no lo borra.
+Before starting any X server, each harness asks Cargo for the window
+manager and test client (`cargo build --locked --offline`). Cargo rebuilds
+them only if they are out of date, and the harness stops with exit code 2
+if the build fails. Pass a binary path as the first argument to test that
+binary as it is. If rustup is installed, run the harnesses with
+`env PATH=/usr/bin:/bin` so that Cargo uses Debian's toolchain.
 
-Código de salida: 0 si ninguna comprobación falla ni falta; 1 si alguna
-falla, falta o está duplicada; 2 si no se pudo preparar la ejecución
-(root, órdenes que faltan, binario ausente o anterior a las fuentes, o
-fallo de `mktemp` al crear el directorio de resultados). Las comprobaciones
-omitidas no cuentan como fallo: un 0 no significa que A9 esté completa.
+Each harness prints a result table and the temporary directory with its
+logs. The exit code is 0 only if no check failed. The harnesses only
+observe the real session with `pgrep`; they never connect to `:0`.
 
-### Aceptación de F2 (A10–A21)
+Some harnesses also produce comparison captures with a historical binary
+built from `git archive` (optional `CRIMSON_F8_BIN` and `CRIMSON_F9_BIN`);
+see the technical documentation.
 
-```sh
-cargo build --locked
-tests/acceptance/f2/run.sh [BINARIO]
-```
+## Safety and isolation
 
-- Mismo uso, comprobaciones previas y código de salida que el arnés de F1,
-  cuyas guardas y funciones reutiliza (`f1/lib.sh` y `f1/xvfb-env.sh`).
-- Cada prueba se ejecuta en un Xvfb nuevo de 1280×720 (A20, de 1279×719) y
-  comprueba la geometría de las ventanas con `xwininfo`.
-- A21 equivale a A9: solo observa la sesión principal con `pgrep`, así que
-  queda siempre parcial.
-- Los resultados se guardan en un directorio nuevo `crimson-f2.XXXXXX`
-  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+Crimson WM must never take over a real session by accident. Before it
+manages anything, it checks, in order:
 
-### Aceptación de F3 (A22–A32)
+1. `DISPLAY` is a local Unix-socket display with a number other than 0;
+   `:0` is always rejected, before connecting.
+2. `CRIMSON_SANDBOX_TOKEN` is set, and the root window carries a matching
+   `_CRIMSON_SANDBOX` marker.
+3. No other window manager is running (`_NET_SUPPORTING_WM_CHECK`, the
+   `WM_S0` selection, or `SubstructureRedirect` already taken).
 
-```sh
-cargo build --locked
-tests/acceptance/f3/run.sh [BINARIO]
-```
+These are **safeguards against accidents, not a security boundary**: any
+client of an X server can affect the others. The details and exit codes
+are in [ADR 0003](docs/adr/0003-salvaguardas-desarrollo.md). The supported
+way to run Crimson WM today is through the acceptance harnesses.
 
-- Mismo uso, comprobaciones previas y código de salida que los arneses de
-  F1 y F2, cuyas guardas y funciones reutiliza.
-- Cada prueba se ejecuta en un Xvfb nuevo de 1280×720. Comprueba el foco
-  real del servidor con `xdotool getwindowfocus` y la ventana activa con
-  `xprop -root _NET_ACTIVE_WINDOW`; las ventanas de prueba son de `xev`,
-  que registra sus propios eventos de foco y mensajes.
-- A32 equivale a A9 y queda siempre parcial.
-- Los resultados se guardan en un directorio nuevo `crimson-f3.XXXXXX`
-  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+## Diagrams and captures
 
-### Aceptación de F4 (A33–A40)
+All captures are real Xvfb dumps. Diagrams are technical drawings made from
+the code (SVG sources in [docs/images](docs/images)).
 
-```sh
-cargo build --locked
-tests/acceptance/f4/run.sh [BINARIO]
-```
+- Master-stack layout: [diagram](docs/images/crimson-wm-master-stack.png),
+  [capture](docs/images/crimson-wm-f2-captura-xvfb.png)
+- Startup and event flow: [diagram](docs/images/crimson-wm-overview.svg)
+- ICCCM/EWMH: [diagram](docs/images/crimson-wm-f6-icccm-ewmh.png)
+- Fullscreen: [diagram](docs/images/crimson-wm-f7-fullscreen.png),
+  [captures](docs/images/crimson-wm-f7-comparison.png)
+- Dialogs: [diagram](docs/images/crimson-wm-f8-dialogs.png),
+  [captures](docs/images/crimson-wm-f8-comparison.png)
+- Window types and layers: [diagram](docs/images/crimson-wm-f9-window-types.png),
+  [captures](docs/images/crimson-wm-f9-comparison.png)
+- Struts and work area: [diagram](docs/images/crimson-wm-f10-workarea.png),
+  [captures](docs/images/crimson-wm-f10-comparison.png)
 
-- Mismo uso, comprobaciones previas y código de salida que los arneses
-  anteriores, cuyas guardas y funciones reutiliza.
-- **Nunca ejecuta las aplicaciones reales.** El `PATH` del WM es un único
-  directorio temporal con copias de `tests/acceptance/f4/fake.sh` llamadas
-  `kitty`, `rofi`, `thunar`, `firefox`, `flameshot` y `nvim`, que registran
-  cómo las lanzó el WM. Antes de arrancarlo se comprueba cómo se resuelve
-  cada nombre; si alguno pudiera resolverse fuera de ese directorio, la
-  prueba no se ejecuta.
-- A40 equivale a A9 y queda siempre parcial; además comprueba que no queda
-  ningún programa falso en marcha.
-- Los resultados se guardan en un directorio nuevo `crimson-f4.XXXXXX`
-  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+## Documentation
 
-### Aceptación de F5 (A41–A52)
+- [Technical documentation (Spanish)](docs/README-technical-es.md): every
+  phase in detail, requirements, harnesses and recorded results.
+- [Architecture decision records (Spanish)](docs/adr/): ADR 0001–0012.
+- [Dependency record](docs/dependencies.md).
 
-```sh
-cargo build --locked --examples
-tests/acceptance/f5/run.sh [BINARIO]
-```
+## Roadmap
 
-- Mismo uso, comprobaciones previas y código de salida que los arneses
-  anteriores, cuyas guardas, funciones y programas falsos reutiliza.
-  Exige además `target/debug/examples/test-client`, más reciente que las
-  fuentes.
-- `test-client` (`examples/test-client.rs`) envía, dentro del Xvfb de cada
-  prueba, el `UnmapNotify` sintético con el que una aplicación retira una
-  ventana (ICCCM); desde F6 tiene más órdenes (ver F6). Rechaza cualquier `DISPLAY` que no sea `:N` con N
-  distinto de 0.
-- A51 termina con `SIGTERM` y `SIGKILL` el proceso `crimson-wm` hijo del
-  `timeout` que lanzó el propio arnés, nunca otro.
-- A52 equivale a A9 y queda siempre parcial.
-- Los resultados se guardan en un directorio nuevo `crimson-f5.XXXXXX`
-  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+Planned work. None of the following is implemented yet:
 
-### Aceptación de F6 (A53–A62 y A64)
+- Mouse support (click to focus, moving and resizing floating windows).
+- More layouts (for example monocle) and adjustable proportions.
+- A declarative TOML configuration, fully validated before it is applied
+  and reloadable, with configurable key bindings.
+- Application and window rules; scratchpads.
+- Multi-monitor support through RandR.
+- IPC and a command-line tool to query and control the window manager.
+- Visual testing with Xephyr.
+- Separate, optional desktop components (panel, launcher, settings), never
+  required by the window manager core.
 
-```sh
-cargo build --locked --examples
-tests/acceptance/f6/run.sh [BINARIO]
-```
+## Contributing
 
-- Mismo uso, comprobaciones previas, código de salida, aislamiento y
-  programas falsos que el arnés de F5.
-- `test-client` también envía mensajes EWMH, toma selecciones y crea
-  ventanas que registran los mensajes `WM_PROTOCOLS` recibidos. Sigue
-  rechazando cualquier `DISPLAY` que no sea `:N` con N distinto de 0.
-- A54 y A64 envían `SIGKILL` y `SIGTERM` solo al proceso `crimson-wm` hijo
-  del `timeout` del arnés. La propiedad obsoleta que deja la terminación
-  abrupta solo la borra el arnés, explícitamente, en el Xvfb de la prueba.
-- A63 (pantalla completa) queda para F7. Las comprobaciones de sesión de
-  A64 equivalen a A9 y quedan siempre parciales.
-- Los resultados se guardan en un directorio nuevo `crimson-f6.XXXXXX`
-  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+Contributions are welcome once you have read [CONTRIBUTING.md](CONTRIBUTING.md).
+Never test Crimson WM on your real X session. To report a security
+problem, see [SECURITY.md](SECURITY.md).
 
-### Aceptación de F7 (A63 y A65–A75)
+## License
 
-```sh
-cargo build --locked --examples
-tests/acceptance/f7/run.sh [BINARIO]
-```
+Crimson WM is licensed under either of
 
-- Mismo uso, comprobaciones previas, código de salida, aislamiento y
-  programas falsos que los arneses de F5 y F6.
-- `test-client` también crea ventanas que piden la pantalla completa antes
-  de mostrarse, diálogos con un marco conocido, y registra los
-  `ConfigureNotify` recibidos.
-- A73 envía `SIGTERM` solo al proceso `crimson-wm` hijo del `timeout` del
-  arnés.
-- A74 hace la captura real (`xwd -root`) y compone y valida la comparación.
-  La imagen del repositorio procede de esa prueba.
-- A75 equivale a A9 y queda siempre parcial.
-- Los resultados, con las capturas sin componer, se guardan en un
-  directorio nuevo `crimson-f7.XXXXXX` dentro de `$TMPDIR` (o de `/tmp`),
-  que el arnés no borra.
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)), or
+- MIT license ([LICENSE-MIT](LICENSE-MIT)),
 
-### Aceptación de F8 (A76–A87)
+at your option. Dependencies keep their own licenses (see
+[docs/dependencies.md](docs/dependencies.md)).
 
-```sh
-cargo build --locked --bins --examples
-tests/acceptance/f8/run.sh [BINARIO]
-```
-
-- Mismo uso, comprobaciones previas, código de salida, aislamiento y
-  programas falsos que los arneses de F5–F7.
-- `test-client` también crea diálogos (`--transient-for`), con pistas de
-  posición (`--position-hint`), un color de fondo (`--background`) o un
-  mapeo diferido (`--map-delay`).
-- A86 hace la captura real (`xwd -root`) y compone y valida la comparación.
-  La imagen del repositorio procede de esa prueba.
-- A87 equivale a A9 y queda siempre parcial.
-- Desde F8-B.1, las comprobaciones de residuos de todas las fases solo
-  cuentan los Xvfb, locks, sockets y directorios temporales del propio
-  arnés: cada caso anota su Xvfb en `xvfb-propios.tsv`. Los Xvfb de otros
-  programas se registran como ajenos y no hacen fallar la prueba (ADR
-  0010).
-- Los resultados, con las capturas sin componer, se guardan en un
-  directorio nuevo `crimson-f8.XXXXXX` dentro de `$TMPDIR` (o de `/tmp`),
-  que el arnés no borra.
-
-### Aceptación de F9 (A88–A103)
-
-```sh
-cargo build --locked --bins --examples
-tests/acceptance/f9/run.sh [BINARIO]
-```
-
-- Mismo uso, comprobaciones previas, código de salida, aislamiento y
-  programas falsos que el arnés de F8.
-- `test-client` también crea ventanas con cualquier lista de tipos
-  (`--type`, repetible y en orden) y override-redirect
-  (`--override-redirect`).
-- A101 usa el binario de F8 que indique `CRIMSON_F8_BIN`, compilado a
-  partir de `git archive 195938d` en un directorio temporal, sin worktree
-  ni red. Sin esa variable, A101 y la composición de A102 quedan OMITIDAS.
-- A102 hace las capturas de F9 y compone y valida la comparación. La imagen
-  del repositorio procede de esa prueba.
-- A103 equivale a A9 y queda siempre parcial.
-- Los resultados se guardan en un directorio nuevo `crimson-f9.XXXXXX`
-  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
-
-### Aceptación de F10 (A104–A120)
-
-```sh
-cargo build --locked --bins --examples
-tests/acceptance/f10/run.sh [BINARIO]
-```
-
-- Mismo uso, comprobaciones previas, código de salida, aislamiento y
-  programas falsos que el arnés de F9.
-- `test-client` también pone struts antes de mapear la ventana (`--strut L R
-  T B` y `--strut-partial V1 … V12`). Los valores mal formados y los
-  cambios dinámicos se escriben con `xprop`.
-- Cada comprobación del área contrasta `_NET_WORKAREA` con la geometría
-  real de las ventanas.
-- A118 usa el binario de F9 que indique `CRIMSON_F9_BIN`, compilado a
-  partir de `git archive 2b2df85` en un directorio temporal, sin worktree
-  ni red. Sin esa variable, A118 y la composición de A119 quedan OMITIDAS.
-- A119 hace las capturas de F10 y compone y valida la comparación. La
-  imagen del repositorio procede de esa prueba.
-- A120 equivale a A9 y queda siempre parcial.
-- Los resultados se guardan en un directorio nuevo `crimson-f10.XXXXXX`
-  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
-
-### Imágenes de los diagramas
-
-```sh
-tools/render-svg.py docs/images/crimson-wm-f10-workarea.svg docs/images/crimson-wm-f10-workarea.png --scale 2
-```
-
-Renderiza un SVG a PNG con las bibliotecas del sistema (librsvg y cairo),
-sin instalar nada ni usar la red.
-
-Desde F4, todos los arneses arrancan el WM con `env -i` y un entorno
-mínimo: `DISPLAY` y `XAUTHORITY` del Xvfb de la prueba, el token, y `PATH`,
-`HOME`, `XDG_*` y `DBUS_SESSION_BUS_ADDRESS` apuntando a directorios
-temporales de la prueba (en F1–F3, con el `PATH` vacío). Nada del entorno
-de la sesión real llega al WM ni a lo que lance.
-
-### Servidores de prueba
-
-- **Xvfb**, mediante `xvfb-run -a`. Según `/usr/bin/xvfb-run` en Debian 13,
-  esta orden elige un display libre a partir de `:99`, genera una cookie
-  temporal con `mcookie` y `xauth` en un directorio `xvfb-run.XXXXXX` de
-  `$TMPDIR` (o de `/tmp`), arranca Xvfb con `-auth` y añade `-nolisten tcp`
-  por defecto. También fija `DISPLAY` y `XAUTHORITY` para la orden que
-  ejecuta y detiene el servidor al terminar. El arnés pasa al servidor
-  `-screen 0 1280x720x24 -nolisten tcp` (la repetición de `-nolisten tcp`
-  es una defensa explícita). Nunca se usará `--listen-tcp`.
-- **Xephyr**, más adelante, siempre con `-auth` y `-nolisten tcp`.
-
-Nunca se usará `-ac`, que desactiva el control de acceso de X11.
-
-Salvaguardas (detalle en `docs/adr/0003-salvaguardas-desarrollo.md`):
-solo displays locales por socket Unix; rechazo incondicional del display
-número 0; marca de sandbox `_CRIMSON_SANDBOX`; y rechazo si ya hay otro
-gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
-`BadAccess`). Son
-**salvaguardas contra accidentes, no una frontera de seguridad.**
-
-## Documentación
-
-- `docs/adr/0001-toolchain.md`: toolchain, MSRV y `Cargo.lock`.
-- `docs/adr/0002-x11rb.md`: biblioteca X11 y garantías de `unsafe`.
-- `docs/adr/0003-salvaguardas-desarrollo.md`: protección de la sesión
-  principal y códigos de salida.
-- `docs/adr/0004-mosaico-master-stack.md`: motor de mosaico de F2.
-- `docs/adr/0005-foco-y-atajos.md`: foco y navegación por teclado de F3.
-- `docs/adr/0006-lanzamiento-de-aplicaciones.md`: lanzamiento de
-  aplicaciones de F4.
-- `docs/adr/0007-escritorios-virtuales.md`: escritorios virtuales de F5.
-- `docs/adr/0008-compatibilidad-icccm-ewmh.md`: compatibilidad ICCCM/EWMH
-  de F6.
-- `docs/adr/0009-pantalla-completa.md`: pantalla completa de F7.
-- `docs/adr/0010-dialogos-transitorios.md`: diálogos y ventanas
-  transitorias de F8.
-- `docs/adr/0011-tipos-de-ventana-ewmh.md`: tipos de ventana EWMH, ventanas
-  fijas y capas de apilamiento de F9.
-- `docs/adr/0012-struts-y-area-de-trabajo.md`: struts y área de trabajo de
-  F10.
-- `docs/dependencies.md`: registro de dependencias y auditorías.
-
-## Volver al estado anterior
-
-Todo el proyecto vive en `~/Proyectos/crimson-wm/`. Fuera de él solo
-existen (o existirán):
-
-- Los paquetes de la toolchain, instalados con
-  `sudo apt install --no-install-recommends rustc cargo rustfmt rust-clippy`.
-  Se retiran con
-  `sudo apt remove rustc cargo rustfmt rust-clippy libstd-rust-dev libstd-rust-1.85`.
-- La caché de Cargo en `~/.cargo/`, creada al descargar las dependencias.
-  Antes de borrarla, comprueba que ningún otro proyecto la utilice.
-- Los servidores de prueba y sus archivos temporales. `xvfb-run`, o el
-  script de Xephyr, elimina el servidor, la cookie y el directorio temporal
-  cuando **él** termina. Tras una interrupción forzada (por ejemplo,
-  SIGKILL) pueden quedar el proceso del servidor, `$TMPDIR/xvfb-run.*` (o
-  `/tmp/xvfb-run.*`), `/tmp/.X<N>-lock` y `/tmp/.X11-unix/X<N>`. Esos
-  archivos se pueden borrar después de comprobar con `pgrep -a Xvfb` (o
-  `pgrep -a Xephyr`) que no queda ningún servidor en ese display.
-- Los resultados de las pruebas de aceptación, en `$TMPDIR/crimson-f1.*`
-  a `$TMPDIR/crimson-f4.*` (o en `/tmp`), con el entorno temporal de cada
-  prueba (`*-entorno/`). Los arneses no los borran; se pueden eliminar
-  cuando ya no se necesiten. Los
-  espacios de nombres de `unshare` y el tmpfs que se monta dentro
-  desaparecen al terminar.
-
-Nada de esto modifica la sesión bspwm + sxhkd, sus configuraciones, el
-gestor de inicio ni los archivos de sesión.
-
-## Licencia
-
-Pendiente de decisión del autor.
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.

@@ -426,5 +426,5 @@ Todas terminaron con código 0.
   capa 3 y no en la 4. La capa 4 sigue probada.
 - `wm.rs` crece y concentra toda la E/S. La lógica sin E/S está en
   `icccm.rs`, `ewmh.rs`, `clients.rs` y `workspaces.rs`.
-- Los arneses de F5 y F6 necesitan `target/debug/examples/test-client`
-  (`cargo build --examples`).
+- Los arneses de F5 y F6 necesitan `target/debug/examples/test-client` y el
+  binario del WM: `cargo build --bins --examples` construye los dos.

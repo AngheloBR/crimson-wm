@@ -409,5 +409,6 @@ comprobación. Como siempre, el `xvfb-run` de A8 termina con 1 (ADR 0003).
 - El registro de cada retirada incluye el escritorio y el motivo; las
   pruebas anteriores buscaban «ventana X retirada» y «gestionada (tipo)»,
   que se conservan como prefijo.
-- Los arneses necesitan `target/debug/examples/test-client`
-  (`cargo build --examples`).
+- Los arneses necesitan `target/debug/examples/test-client` y el binario
+  del WM al día. Desde P1-B.1 los piden a Cargo, que los compila si han
+  quedado obsoletos (`tests/acceptance/f1/binaries.sh`).

@@ -347,4 +347,5 @@ ejercitan todos los casos de F3.
 - El foco explícito sustituye al comportamiento del servidor (el foco
   seguía al puntero); el clic para enfocar llegará con el ratón.
 - Las órdenes nuevas del arnés (`xclock`, de x11-apps) figuran en la
-  cabecera de `tests/acceptance/f3/run.sh` y en el `README.md`.
+  cabecera de `tests/acceptance/f3/run.sh` y en
+  `docs/README-technical-es.md`.

@@ -259,4 +259,4 @@ resultados. Los identificadores de las comprobaciones no cambian.
   misma firma que `master_stack`.
 - Las nuevas órdenes del arnés (`xlogo`, de x11-apps, y `xev`, de
   x11-utils) figuran en la cabecera de `tests/acceptance/f2/run.sh` y en
-  el `README.md`.
+  `docs/README-technical-es.md`.

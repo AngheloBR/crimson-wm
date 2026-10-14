@@ -320,7 +320,7 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
   «Comprobaciones sobre la sesión principal» en «Entorno de pruebas»).
 - Las órdenes que usa el arnés, con los paquetes de Debian 13 que las
   aportan, figuran en la cabecera de `tests/acceptance/f1/run.sh` y en la
-  tabla de requisitos del `README.md`.
+  tabla de requisitos de `docs/README-technical-es.md`.
 
 ## Pruebas de aceptación de F1
 

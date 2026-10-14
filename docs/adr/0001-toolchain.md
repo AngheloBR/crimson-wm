@@ -87,4 +87,5 @@ descarga toolchains fuera del sistema de paquetes.
 - Las dependencias que exijan una versión de Rust superior a 1.85 no se
   pueden usar sin revisar esta decisión.
 - Cambiar de toolchain o de MSRV requiere un nuevo ADR.
-- Reversión: ver la sección "Volver al estado anterior" del `README.md`.
+- Reversión: ver la sección "Volver al estado anterior" de
+  `docs/README-technical-es.md`.

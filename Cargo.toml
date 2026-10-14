@@ -5,10 +5,15 @@ edition = "2024"
 # MSRV declarado: 1.85 (1.85.0 o superior). Solo se verificará con rustc
 # 1.85.1 de Debian 13; 1.85.0 no se probará (ver docs/adr/0001-toolchain.md).
 rust-version = "1.85"
+description = "An experimental, safety-first tiling window manager for X11, written in Rust (pre-alpha)"
+repository = "https://github.com/AngheloBR/crimson-wm"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["x11", "window-manager", "tiling", "ewmh", "icccm"]
+categories = ["gui"]
 # Impide un `cargo publish` accidental.
 publish = false
-# license: pendiente de decisión del autor.
-# authors: se omite hasta disponer de una identidad autorizada.
+# authors: se omite (es opcional); la autoría consta en Git.
 
 [dependencies]
 # Solo el protocolo base de X11 en F1; las extensiones se activan cuando

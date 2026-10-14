@@ -5,10 +5,10 @@
 # Xvfb (`xwd`) y componen la comparación entre F8 y F9 con ImageMagick.
 #
 # Uso: tests/acceptance/f9/run.sh [BINARIO]
-#   BINARIO: por defecto target/debug/crimson-wm. Este y el cliente de
-#   prueba target/debug/examples/test-client deben estar compilados y ser
-#   más recientes que src/, examples/, Cargo.toml y Cargo.lock
-#   (`cargo build --examples`).
+#   BINARIO: un crimson-wm concreto, que se usa tal cual. Sin él, el arnés
+#   pide a Cargo (`cargo build --locked --offline`) el binario y el cliente
+#   de prueba (examples/test-client.rs), y Cargo compila lo que haya quedado
+#   obsoleto (f1/binaries.sh). El cliente se pide a Cargo en los dos casos.
 #   CRIMSON_F8_BIN (opcional): binario de F8, compilado a partir de
 #   `git archive 195938d` en un directorio temporal. Solo lo usa A101, en
 #   su propio Xvfb y con las mismas guardas; sin él, A101 y la composición
@@ -56,15 +56,11 @@ if ((${#missing[@]})); then
     exit 2
 fi
 
-BIN=${1:-$ROOT/target/debug/crimson-wm}
-TEST_CLIENT=$ROOT/target/debug/examples/test-client
-for b in "$BIN" "$TEST_CLIENT"; do
-    if [[ ! -x $b ]]; then
-        echo "run.sh: no existe $b (ejecuta cargo build --examples)" >&2
-        exit 2
-    fi
-done
-BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
+# Binario del WM y cliente de prueba: los decide Cargo, salvo un BINARIO
+# explícito (P1-B.1). Antes de crear ningún directorio, servidor o cliente X.
+# shellcheck source=../f1/binaries.sh
+source "$F1/binaries.sh"
+ensure_binaries "$ROOT" 1 "${1:-}" || exit 2
 F8_BIN=${CRIMSON_F8_BIN:-}
 if [[ -n $F8_BIN ]]; then
     if [[ ! -x $F8_BIN || $(basename "$F8_BIN") != crimson-wm ]]; then
@@ -73,22 +69,6 @@ if [[ -n $F8_BIN ]]; then
     fi
     F8_BIN=$(cd "$(dirname "$F8_BIN")" && pwd)/crimson-wm
 fi
-# Cada binario se compara con sus fuentes: el WM con src/ y el cliente de
-# prueba con examples/ (no depende de src/, y Cargo no lo vuelve a enlazar
-# cuando solo cambia src/).
-for b in "$BIN" "$TEST_CLIENT"; do
-    sources=("$ROOT/Cargo.toml" "$ROOT/Cargo.lock")
-    if [[ $b == "$BIN" ]]; then
-        (($#)) && continue
-        sources+=("$ROOT/src")
-    else
-        sources+=("$ROOT/examples")
-    fi
-    if [[ -n $(find "${sources[@]}" -newer "$b" -print -quit) ]]; then
-        echo "run.sh: $b es anterior a las fuentes (ejecuta cargo build --examples)" >&2
-        exit 2
-    fi
-done
 
 # Nada de lo que se ejecute aquí debe heredar el acceso a la sesión real.
 unset DISPLAY XAUTHORITY CRIMSON_SANDBOX_TOKEN DBUS_SESSION_BUS_ADDRESS WINDOWID DESKTOP_STARTUP_ID CRIMSON_F8_BIN

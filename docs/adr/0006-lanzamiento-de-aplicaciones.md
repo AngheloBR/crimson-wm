@@ -283,4 +283,5 @@ anterior. Las tres terminaron con código 0.
   esperan a su hijo y no comparten estado con el bucle salvo un contador
   atómico.
 - Las órdenes nuevas del arnés (`ps`, `cmp`, `xmodmap`) figuran en la
-  cabecera de `tests/acceptance/f4/run.sh` y en el `README.md`.
+  cabecera de `tests/acceptance/f4/run.sh` y en
+  `docs/README-technical-es.md`.
