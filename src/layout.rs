@@ -1,5 +1,5 @@
-//! Geometría del diseño master-stack (ADR 0004). Sin E/S: solo calcula
-//! rectángulos.
+//! Geometría del diseño master-stack (ADR 0004) y del área de trabajo
+//! (ADR 0012). Sin E/S: solo calcula rectángulos.
 //!
 //! Los tipos coinciden con los del protocolo X11 (coordenadas `INT16` y
 //! tamaños `CARD16`), así que ningún resultado queda fuera de su rango, y
@@ -14,6 +14,87 @@ pub struct Rect {
     pub y: i16,
     pub width: u16,
     pub height: u16,
+}
+
+/// Grosor reservado en cada borde de la pantalla (ADR 0012): el máximo de
+/// las reservas efectivas de los paneles en ese borde.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Insets {
+    pub left: u32,
+    pub right: u32,
+    pub top: u32,
+    pub bottom: u32,
+}
+
+impl Insets {
+    /// El máximo de cada borde entre las dos: los struts se miden desde el
+    /// borde de la pantalla, así que dos paneles apilados en el mismo borde
+    /// no se suman.
+    pub fn max(self, other: Insets) -> Insets {
+        Insets {
+            left: self.left.max(other.left),
+            right: self.right.max(other.right),
+            top: self.top.max(other.top),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
+}
+
+/// Área de trabajo: la pantalla menos las reservas, y si alguna reserva se
+/// ha tenido que limitar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkArea {
+    pub rect: Rect,
+    pub limited: bool,
+}
+
+/// Área de trabajo de `screen` con las reservas `insets` (ADR 0012). Nunca
+/// es vacía: en cada eje queda al menos un píxel. Si las reservas de un eje
+/// no dejan ninguno, se limitan de forma determinista: primero la del borde
+/// final (derecha o abajo) y, si no basta, la del inicial. Es la única
+/// restricción de Crimson sobre los valores (EWMH no fija ningún mínimo).
+/// Todo se calcula en `u32` sin desbordamientos.
+pub fn work_area(screen: Rect, insets: Insets) -> WorkArea {
+    // (inicio, tamaño) de un eje y si se ha limitado.
+    let axis = |origin: i16, size: u16, before: u32, after: u32| {
+        let size32 = u32::from(size.max(1));
+        let before_eff = before.min(size32 - 1);
+        let after_eff = after.min(size32 - 1 - before_eff);
+        let limited = before_eff != before || after_eff != after;
+        let length = size32 - before_eff - after_eff;
+        // before_eff < size32 <= u16::MAX y length <= size32: caben.
+        let offset = u16::try_from(before_eff).unwrap_or(0);
+        (
+            origin.saturating_add_unsigned(offset),
+            u16::try_from(length).unwrap_or(1),
+            limited,
+        )
+    };
+    let (x, width, lx) = axis(screen.x, screen.width, insets.left, insets.right);
+    let (y, height, ly) = axis(screen.y, screen.height, insets.top, insets.bottom);
+    WorkArea {
+        rect: Rect {
+            x,
+            y,
+            width,
+            height,
+        },
+        limited: lx || ly,
+    }
+}
+
+/// Valor de `_NET_WORKAREA`: `[x, y, ancho, alto]` del área de trabajo,
+/// repetido para cada uno de los `desktops` escritorios (ADR 0012). Las
+/// coordenadas negativas, imposibles con la raíz en el origen, se escriben
+/// como 0.
+pub fn workarea_property(work: Rect, desktops: usize) -> Vec<u32> {
+    let one = [
+        u32::try_from(work.x).unwrap_or(0),
+        u32::try_from(work.y).unwrap_or(0),
+        u32::from(work.width),
+        u32::from(work.height),
+    ];
+    one.iter().copied().cycle().take(4 * desktops).collect()
 }
 
 /// Posición (x, y) de una ventana de `width` × `height` con borde `border`
@@ -323,5 +404,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    // U22: área de trabajo (ADR 0012).
+
+    fn insets(left: u32, right: u32, top: u32, bottom: u32) -> Insets {
+        Insets {
+            left,
+            right,
+            top,
+            bottom,
+        }
+    }
+
+    fn work(left: u32, right: u32, top: u32, bottom: u32) -> (Rect, bool) {
+        let w = work_area(SCREEN, insets(left, right, top, bottom));
+        (w.rect, w.limited)
+    }
+
+    #[test]
+    fn reservas_en_los_cuatro_bordes() {
+        assert_eq!(work(0, 0, 0, 0), (SCREEN, false));
+        assert_eq!(work(0, 0, 40, 0), (rect(0, 40, 1280, 680), false));
+        assert_eq!(work(0, 0, 0, 30), (rect(0, 0, 1280, 690), false));
+        assert_eq!(work(200, 0, 0, 0), (rect(200, 0, 1080, 720), false));
+        assert_eq!(work(0, 150, 0, 0), (rect(0, 0, 1130, 720), false));
+        assert_eq!(work(10, 20, 30, 40), (rect(10, 30, 1250, 650), false));
+    }
+
+    #[test]
+    fn maximo_por_borde_no_suma() {
+        let a = insets(0, 0, 30, 0);
+        let b = insets(0, 0, 60, 20);
+        let c = insets(100, 0, 0, 0);
+        assert_eq!(a.max(b).max(c), insets(100, 0, 60, 20));
+        assert_eq!(a.max(a), a);
+        assert_eq!(Insets::default().max(a), a);
+    }
+
+    #[test]
+    fn reservas_extremas_dejan_un_pixel() {
+        // Un borde que pide toda la pantalla, o más: queda un píxel.
+        assert_eq!(work(0, 0, 720, 0), (rect(0, 719, 1280, 1), true));
+        assert_eq!(work(0, 0, u32::MAX, 0), (rect(0, 719, 1280, 1), true));
+        assert_eq!(
+            work(u32::MAX, u32::MAX, u32::MAX, u32::MAX),
+            (rect(1279, 719, 1, 1), true)
+        );
+        // Dos bordes opuestos que no caben: se limita primero el final.
+        assert_eq!(work(0, 0, 400, 400), (rect(0, 400, 1280, 1), true));
+        assert_eq!(work(700, 700, 0, 0), (rect(700, 0, 1, 720), true));
+        // Justo en el límite: sin limitar.
+        assert_eq!(work(0, 0, 360, 359), (rect(0, 360, 1280, 1), false));
+        assert_eq!(work(1279, 0, 0, 0), (rect(1279, 0, 1, 720), false));
+    }
+
+    #[test]
+    fn pantallas_minimas_y_desplazadas() {
+        let tiny = rect(0, 0, 1, 1);
+        assert_eq!(work_area(tiny, insets(5, 5, 5, 5)).rect, tiny);
+        let shifted = rect(-10, 20, 100, 50);
+        assert_eq!(
+            work_area(shifted, insets(10, 0, 5, 0)).rect,
+            rect(0, 25, 90, 45)
+        );
+        // El área nunca tiene un tamaño 0, que X11 rechazaría.
+        for (l, r, t, b) in [(0, 0, 0, 0), (u32::MAX, 0, 0, u32::MAX), (1, 1, 1, 1)] {
+            let w = work_area(tiny, insets(l, r, t, b)).rect;
+            assert!(w.width >= 1 && w.height >= 1);
+        }
+    }
+
+    #[test]
+    fn propiedad_workarea() {
+        let v = workarea_property(rect(0, 40, 1280, 680), 8);
+        assert_eq!(v.len(), 32);
+        for chunk in v.chunks(4) {
+            assert_eq!(chunk, [0, 40, 1280, 680]);
+        }
+        assert_eq!(workarea_property(rect(-5, 3, 1, 1), 1), vec![0, 3, 1, 1]);
+        assert_eq!(workarea_property(SCREEN, 0), Vec::<u32>::new());
     }
 }

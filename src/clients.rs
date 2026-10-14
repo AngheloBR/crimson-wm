@@ -276,22 +276,22 @@ impl Clients {
             .map(|c| c.window)
     }
 
-    /// Geometría de cada ventana colocada por el WM en `area`: las del
-    /// mosaico que no están a pantalla completa, en orden, con
-    /// `master_stack`, y la de pantalla completa, sea del tipo que sea, con
-    /// el área entera. La ventana a pantalla completa sale del cálculo del
-    /// mosaico pero conserva su posición en la lista: al salir recupera su
-    /// hueco.
-    pub fn plan(&self, area: Rect) -> Vec<(Window, Rect)> {
+    /// Geometría de cada ventana colocada por el WM: las del mosaico que no
+    /// están a pantalla completa, en orden, con `master_stack` sobre el área
+    /// de trabajo `work`, y la de pantalla completa, sea del tipo que sea,
+    /// con la pantalla física `screen` (ADR 0012). La ventana a pantalla
+    /// completa sale del cálculo del mosaico pero conserva su posición en la
+    /// lista: al salir recupera su hueco.
+    pub fn plan(&self, work: Rect, screen: Rect) -> Vec<(Window, Rect)> {
         let tiled: Vec<Window> = self
             .list
             .iter()
             .filter(|c| c.kind == Kind::Tiled && c.fullscreen.is_none())
             .map(|c| c.window)
             .collect();
-        let rects = layout::master_stack(area, tiled.len());
+        let rects = layout::master_stack(work, tiled.len());
         let mut plan: Vec<(Window, Rect)> = tiled.into_iter().zip(rects).collect();
-        plan.extend(self.fullscreen().map(|w| (w, area)));
+        plan.extend(self.fullscreen().map(|w| (w, screen)));
         plan
     }
 
@@ -449,6 +449,31 @@ pub enum Layer {
     Above,
 }
 
+/// Clase de una ventana fija (ADR 0011 y 0012).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixedKind {
+    /// Panel: capa superior; es la única que puede reservar espacio.
+    Dock,
+    /// Aviso: capa superior.
+    Notification,
+    /// Fondo o escritorio: capa inferior.
+    Desktop,
+}
+
+impl FixedKind {
+    pub fn layer(self) -> Layer {
+        match self {
+            FixedKind::Dock | FixedKind::Notification => Layer::Above,
+            FixedKind::Desktop => Layer::Below,
+        }
+    }
+
+    /// Sus struts reservan espacio (ADR 0012): solo los paneles.
+    pub fn reserves(self) -> bool {
+        self == FixedKind::Dock
+    }
+}
+
 /// Qué hace el WM con una ventana que se mapea (ADR 0011).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disposition {
@@ -458,7 +483,7 @@ pub enum Disposition {
     Managed(Class),
     /// Ventana fija: en todos los escritorios, en su capa, sin foco ni
     /// mosaico.
-    Fixed(Layer),
+    Fixed(FixedKind),
 }
 
 /// Decide cómo se gestiona una ventana. Es la única fuente de la
@@ -477,10 +502,11 @@ pub fn classify(info: &WindowInfo) -> Disposition {
     // propietario). Hoy la pantalla completa coincide con el foco y el
     // centrado con las flotantes con foco, pero son capacidades distintas.
     let (kind, focusable, fullscreen, centers) = match info.window_type {
-        Some(WindowType::Dock | WindowType::Notification) => {
-            return Disposition::Fixed(Layer::Above);
+        Some(WindowType::Dock) => return Disposition::Fixed(FixedKind::Dock),
+        Some(WindowType::Notification) => {
+            return Disposition::Fixed(FixedKind::Notification);
         }
-        Some(WindowType::Desktop) => return Disposition::Fixed(Layer::Below),
+        Some(WindowType::Desktop) => return Disposition::Fixed(FixedKind::Desktop),
         Some(WindowType::Normal) => (Kind::Tiled, true, true, false),
         Some(WindowType::Dialog | WindowType::Utility | WindowType::Toolbar) => {
             (Kind::Floating, true, true, true)
@@ -635,7 +661,7 @@ mod tests {
     fn plan_sin_pantalla_completa() {
         let clients = with(&[(1, TILED), (9, FLOATING), (2, TILED), (3, TILED)]);
         assert_eq!(
-            clients.plan(AREA),
+            clients.plan(AREA, AREA),
             vec![
                 (1, r(0, 0, 640, 720)),
                 (2, r(640, 0, 640, 360)),
@@ -651,12 +677,12 @@ mod tests {
         clients.get_mut(2).unwrap().fullscreen = Some(Restore { frame: None });
         // Las demás se reparten el mosaico; la de pantalla completa, el área.
         assert_eq!(
-            clients.plan(AREA),
+            clients.plan(AREA, AREA),
             vec![(1, r(0, 0, 640, 720)), (3, r(640, 0, 640, 720)), (2, AREA)]
         );
         // Al salir recupera su hueco: su posición en la lista no ha cambiado.
         clients.get_mut(2).unwrap().fullscreen = None;
-        assert_eq!(clients.plan(AREA)[1], (2, r(640, 0, 640, 360)));
+        assert_eq!(clients.plan(AREA, AREA)[1], (2, r(640, 0, 640, 360)));
         assert_eq!(clients.tiled().collect::<Vec<_>>(), vec![1, 2, 3]);
     }
 
@@ -669,11 +695,46 @@ mod tests {
                 border: 2,
             }),
         });
-        assert_eq!(clients.plan(AREA), vec![(1, AREA), (9, AREA)]);
+        assert_eq!(clients.plan(AREA, AREA), vec![(1, AREA), (9, AREA)]);
         assert_eq!(clients.fullscreen(), Some(9));
         let removed = clients.unmanage(9).unwrap();
         assert!(removed.fullscreen);
         assert_eq!(clients.fullscreen(), None);
+    }
+
+    // U22: el mosaico usa el área de trabajo y la pantalla completa, la
+    // pantalla física.
+
+    #[test]
+    fn plan_con_area_de_trabajo() {
+        let work = r(0, 40, 1280, 680);
+        let mut clients = with(&[(1, TILED), (9, FLOATING), (2, TILED), (3, TILED)]);
+        assert_eq!(
+            clients.plan(work, AREA),
+            vec![
+                (1, r(0, 40, 640, 680)),
+                (2, r(640, 40, 640, 340)),
+                (3, r(640, 380, 640, 340)),
+            ]
+        );
+        clients.get_mut(2).unwrap().fullscreen = Some(Restore { frame: None });
+        assert_eq!(
+            clients.plan(work, AREA),
+            vec![
+                (1, r(0, 40, 640, 680)),
+                (3, r(640, 40, 640, 680)),
+                (2, AREA)
+            ]
+        );
+        // Las flotantes no están en el plan: nunca se mueven por el área.
+        assert!(clients.plan(work, AREA).iter().all(|&(w, _)| w != 9));
+    }
+
+    #[test]
+    fn marco_de_respaldo_en_el_area_de_trabajo() {
+        let frame = Frame::fallback(r(0, 40, 1280, 680));
+        assert_eq!(frame.rect, r(213, 153, 853, 453));
+        assert_eq!(frame.border, 0);
     }
 
     #[test]
@@ -894,9 +955,9 @@ mod tests {
             (WindowType::Tooltip, popup),
             (WindowType::Combo, popup),
             (WindowType::Dnd, popup),
-            (WindowType::Notification, Fixed(Layer::Above)),
-            (WindowType::Dock, Fixed(Layer::Above)),
-            (WindowType::Desktop, Fixed(Layer::Below)),
+            (WindowType::Notification, Fixed(FixedKind::Notification)),
+            (WindowType::Dock, Fixed(FixedKind::Dock)),
+            (WindowType::Desktop, Fixed(FixedKind::Desktop)),
         ] {
             for transient in [false, true] {
                 assert_eq!(
@@ -907,6 +968,12 @@ mod tests {
             }
         }
         assert_eq!(WindowType::ALL.len(), 14);
+        // U22: solo el panel reserva espacio; las capas de F9 no cambian.
+        assert!(FixedKind::Dock.reserves());
+        assert!(!FixedKind::Notification.reserves() && !FixedKind::Desktop.reserves());
+        assert_eq!(FixedKind::Dock.layer(), Layer::Above);
+        assert_eq!(FixedKind::Notification.layer(), Layer::Above);
+        assert_eq!(FixedKind::Desktop.layer(), Layer::Below);
     }
 
     #[test]

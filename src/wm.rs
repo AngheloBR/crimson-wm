@@ -34,6 +34,13 @@
 //! escritorio (mosaico o flotante) o es fija (`DESKTOP`, `DOCK` y
 //! `NOTIFICATION`): en todos los escritorios, sin foco y en su capa de la
 //! pila (`apply_layers`).
+//!
+//! Struts y área de trabajo (ADR 0012): `screen` es la pantalla física y
+//! `work`, la pantalla menos lo que reservan los paneles (`DOCK`) con
+//! `_NET_WM_STRUT_PARTIAL` o `_NET_WM_STRUT`. El mosaico, el centrado de
+//! los diálogos y el marco de respaldo usan `work`; la pantalla completa,
+//! `screen`. `work` se recalcula cuando cambian las reservas
+//! (`update_work_area`) y se publica en `_NET_WORKAREA`.
 
 use std::collections::VecDeque;
 
@@ -51,11 +58,14 @@ use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
 
 use crate::clients::{
-    self, Class, Direction, Disposition, Frame, InputModel, Kind, Layer, Restore, WindowInfo,
+    self, Class, Direction, Disposition, FixedKind, Frame, InputModel, Kind, Layer, Restore,
+    WindowInfo,
 };
 use crate::display::Target;
 use crate::error::Fatal;
-use crate::ewmh::{self, MessageTypes, Request, Source, StateRead, TypeAtoms, WindowType};
+use crate::ewmh::{
+    self, MessageTypes, Request, Source, StateRead, StrutRead, StrutSource, TypeAtoms, WindowType,
+};
 use crate::icccm::{self, ICONIC_STATE, NORMAL_STATE, ProtocolAtoms, Protocols, TransientFor};
 use crate::keys::{self, Action, Repeats};
 use crate::layout::{self, Rect};
@@ -84,6 +94,9 @@ x11rb::atom_manager! {
         _NET_WM_STATE,
         _NET_WM_STATE_FULLSCREEN,
         _NET_WM_WINDOW_TYPE,
+        _NET_WM_STRUT,
+        _NET_WM_STRUT_PARTIAL,
+        _NET_WORKAREA,
     }
 }
 
@@ -114,15 +127,17 @@ pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(
     let selection_name = safeguards::manager_selection(target.screen);
     let selection = intern_all(conn, &[selection_name.as_str()])?[0];
 
+    let physical = Rect {
+        x: 0,
+        y: 0,
+        width: screen.width_in_pixels,
+        height: screen.height_in_pixels,
+    };
     let mut wm = Wm {
         conn,
         root: screen.root,
-        area: Rect {
-            x: 0,
-            y: 0,
-            width: screen.width_in_pixels,
-            height: screen.height_in_pixels,
-        },
+        screen: physical,
+        work: physical,
         types,
         atoms,
         workspaces: Workspaces::default(),
@@ -133,6 +148,7 @@ pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(
         dirty: Dirty {
             clients: true,
             stacking: true,
+            workarea: true,
         },
     };
     wm.identify(selection, &selection_name, &supported)?;
@@ -275,13 +291,20 @@ struct Dirty {
     clients: bool,
     /// `_NET_CLIENT_LIST_STACKING` (requiere un `QueryTree`).
     stacking: bool,
+    /// `_NET_WORKAREA` (ADR 0012).
+    workarea: bool,
 }
 
 struct Wm<'c, C: Connection> {
     conn: &'c C,
     root: Window,
-    /// Área del mosaico: la pantalla completa, fija desde el arranque.
-    area: Rect,
+    /// Pantalla física, fija desde el arranque (sin RandR): la usa la
+    /// pantalla completa.
+    screen: Rect,
+    /// Área de trabajo (ADR 0012): `screen` menos las reservas efectivas de
+    /// los paneles. Se deriva de `Workspaces::insets` en `update_work_area`
+    /// y solo se guarda para saber cuándo cambia.
+    work: Rect,
     atoms: Atoms,
     /// Átomos de los tipos de `_NET_WM_WINDOW_TYPE` (ADR 0011).
     types: TypeAtoms,
@@ -589,6 +612,18 @@ impl<C: Connection> Wm<'_, C> {
                 )
                 .map_err(Fatal::lost)?;
         }
+        if std::mem::take(&mut self.dirty.workarea) {
+            let value = layout::workarea_property(self.work, workspaces::COUNT);
+            self.conn
+                .change_property32(
+                    PropMode::REPLACE,
+                    self.root,
+                    self.atoms._NET_WORKAREA,
+                    AtomEnum::CARDINAL,
+                    &value,
+                )
+                .map_err(Fatal::lost)?;
+        }
         if std::mem::take(&mut self.dirty.stacking) {
             let tree = self
                 .conn
@@ -636,7 +671,7 @@ impl<C: Connection> Wm<'_, C> {
             }
             match clients::classify(&info) {
                 Disposition::Unmanaged => {}
-                Disposition::Fixed(layer) => self.manage_fixed(window, layer, info.fullscreen)?,
+                Disposition::Fixed(kind) => self.manage_fixed(window, kind, info.fullscreen)?,
                 Disposition::Managed(class) => {
                     self.manage(window, class)?;
                     if info.fullscreen {
@@ -650,7 +685,9 @@ impl<C: Connection> Wm<'_, C> {
         for window in fullscreen {
             self.set_fullscreen(window, true, "adopción", true)?;
         }
-        // También coloca las fijas en su capa (ADR 0011).
+        // Con las reservas de los paneles adoptados (ADR 0012). `arrange`
+        // también coloca las fijas en su capa (ADR 0011).
+        self.update_work_area();
         self.arrange()?;
         self.set_focus(self.workspaces.current().fallback(), CURRENT_TIME)
     }
@@ -679,9 +716,15 @@ impl<C: Connection> Wm<'_, C> {
             };
             let class = match clients::classify(&info) {
                 Disposition::Managed(class) => Some(class),
-                Disposition::Fixed(layer) => {
-                    self.manage_fixed(window, layer, info.fullscreen)?;
-                    self.apply_layers()?;
+                Disposition::Fixed(kind) => {
+                    self.manage_fixed(window, kind, info.fullscreen)?;
+                    // Si el panel reserva espacio, el mosaico se ajusta antes
+                    // de mapearlo (ADR 0012); `arrange` aplica las capas.
+                    if self.update_work_area() {
+                        self.arrange()?;
+                    } else {
+                        self.apply_layers()?;
+                    }
                     None
                 }
                 // Una override-redirect no genera MapRequest; si llegara,
@@ -743,11 +786,11 @@ impl<C: Connection> Wm<'_, C> {
     /// tratamiento (`configure_fixed`).
     fn on_configure_request(&mut self, event: &ConfigureRequestEvent) -> Result<(), Fatal> {
         if let Some(fixed) = self.workspaces.fixed(event.window) {
-            return self.configure_fixed(event, fixed.layer);
+            return self.configure_fixed(event, fixed.kind.layer());
         }
         match self.workspaces.get(event.window) {
             Some(client) if client.fullscreen.is_some() => {
-                let notify = synthetic_configure_notify(event.window, self.area, 0);
+                let notify = synthetic_configure_notify(event.window, self.screen, 0);
                 self.conn
                     .send_event(false, event.window, EventMask::STRUCTURE_NOTIFY, notify)
                     .map_err(Fatal::lost)?;
@@ -854,11 +897,16 @@ impl<C: Connection> Wm<'_, C> {
         if let Some(fixed) = self.workspaces.unmanage_fixed(window) {
             eprintln!(
                 "crimson-wm: ventana 0x{window:x} retirada (fija, {}): {reason}",
-                layer_name(fixed.layer)
+                layer_name(fixed.kind.layer())
             );
             self.dirty.clients = true;
             self.dirty.stacking = true;
-            return self.disown(window, gone, false, true);
+            self.disown(window, gone, false, true)?;
+            // Sin su reserva, el mosaico recupera el espacio (ADR 0012).
+            if !fixed.strut.is_empty() && self.update_work_area() {
+                self.arrange()?;
+            }
+            return Ok(());
         }
         // Antes de olvidarla: a su propietario vuelve el foco (ADR 0010).
         let owner = self.workspaces.owner_of(window);
@@ -1026,7 +1074,7 @@ impl<C: Connection> Wm<'_, C> {
             own.rect.height,
             own.border,
             over.rect,
-            self.area,
+            self.work,
         );
         self.conn
             .configure_window(
@@ -1289,6 +1337,18 @@ impl<C: Connection> Wm<'_, C> {
         if event.atom == u32::from(AtomEnum::WM_TRANSIENT_FOR) {
             return self.on_transient_for(event.window);
         }
+        if event.atom == self.atoms._NET_WM_STRUT || event.atom == self.atoms._NET_WM_STRUT_PARTIAL
+        {
+            // Solo los paneles gestionados reservan espacio (ADR 0012).
+            let dock = self
+                .workspaces
+                .fixed(event.window)
+                .is_some_and(|f| f.kind.reserves());
+            if dock && self.read_strut(event.window)? && self.update_work_area() {
+                self.arrange()?;
+            }
+            return Ok(());
+        }
         if event.atom == self.atoms._NET_WM_WINDOW_TYPE {
             if self.workspaces.is_managed(event.window) {
                 eprintln!(
@@ -1519,18 +1579,22 @@ impl<C: Connection> Wm<'_, C> {
     /// las demás y sin foco. Si pide pantalla completa en `_NET_WM_STATE`, se
     /// rechaza y se retira de la propiedad. La capa se aplica después
     /// (`apply_layers`).
+    ///
+    /// Un panel lee además sus struts (ADR 0012), después de seleccionar
+    /// `PropertyChange`: un cambio posterior a la lectura llega como evento.
+    /// El área de trabajo la recalcula quien llama (`update_work_area`).
     fn manage_fixed(
         &mut self,
         window: Window,
-        layer: Layer,
+        kind: FixedKind,
         fullscreen: bool,
     ) -> Result<(), Fatal> {
-        if !self.workspaces.manage_fixed(window, layer) {
+        if !self.workspaces.manage_fixed(window, kind) {
             return Ok(());
         }
         eprintln!(
             "crimson-wm: ventana 0x{window:x} gestionada (fija, {}) en todos los escritorios",
-            layer_name(layer)
+            layer_name(kind.layer())
         );
         self.conn
             .change_save_set(SetMode::INSERT, window)
@@ -1545,12 +1609,16 @@ impl<C: Connection> Wm<'_, C> {
                 &[ewmh::STICKY],
             )
             .map_err(Fatal::lost)?;
-        // PropertyChange, solo para registrar los cambios de tipo, que se
-        // ignoran. Sin FocusChange: el WM nunca la enfoca.
+        // PropertyChange: para los struts de un panel y para registrar los
+        // cambios de tipo, que se ignoran. Sin FocusChange: el WM nunca la
+        // enfoca.
         let aux = ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE);
         self.conn
             .change_window_attributes(window, &aux)
             .map_err(Fatal::lost)?;
+        if kind.reserves() {
+            self.read_strut(window)?;
+        }
         if fullscreen {
             eprintln!(
                 "crimson-wm: ventana 0x{window:x} no admite pantalla completa (estado inicial): petición rechazada"
@@ -1560,6 +1628,119 @@ impl<C: Connection> Wm<'_, C> {
         self.dirty.clients = true;
         self.dirty.stacking = true;
         Ok(())
+    }
+
+    /// Lee y valida los struts de un panel gestionado (ADR 0012) y los
+    /// guarda. Devuelve `true` si han cambiado. Una propiedad defectuosa se
+    /// registra y el panel queda sin reserva; si la ventana ya no existe, no
+    /// cambia nada (su UnmapNotify o DestroyNotify la retirará).
+    fn read_strut(&mut self, window: Window) -> Result<bool, Fatal> {
+        let partial = self
+            .conn
+            .get_property(
+                false,
+                window,
+                self.atoms._NET_WM_STRUT_PARTIAL,
+                AtomEnum::ANY,
+                0,
+                ewmh::STRUT_PARTIAL_LEN,
+            )
+            .map_err(Fatal::lost)?;
+        let legacy = self
+            .conn
+            .get_property(
+                false,
+                window,
+                self.atoms._NET_WM_STRUT,
+                AtomEnum::ANY,
+                0,
+                ewmh::STRUT_LEN,
+            )
+            .map_err(Fatal::lost)?;
+        let partial = reply_or_gone(
+            partial.reply(),
+            window,
+            "GetProperty(_NET_WM_STRUT_PARTIAL)",
+        )?;
+        let legacy = reply_or_gone(legacy.reply(), window, "GetProperty(_NET_WM_STRUT)")?;
+        let (Some(partial), Some(legacy)) = (partial, legacy) else {
+            return Ok(false);
+        };
+        let (width, height) = (self.screen.width, self.screen.height);
+        let strut = match ewmh::struts(
+            &strut_read(&partial),
+            &strut_read(&legacy),
+            AtomEnum::CARDINAL.into(),
+            width,
+            height,
+        ) {
+            Ok((source, strut)) => {
+                let name = match source {
+                    StrutSource::None => "sin struts",
+                    StrutSource::Partial => "_NET_WM_STRUT_PARTIAL",
+                    StrutSource::Legacy => "_NET_WM_STRUT",
+                };
+                let [left, right, top, bottom] = strut.effective(width, height);
+                eprintln!(
+                    "crimson-wm: ventana 0x{window:x}: reserva ({name}): izquierda {left}, derecha {right}, arriba {top}, abajo {bottom}"
+                );
+                let declared = ewmh::Side::ALL.map(|side| strut.side(side).thickness);
+                if declared != [left, right, top, bottom] {
+                    eprintln!(
+                        "crimson-wm: ventana 0x{window:x}: reserva declarada {declared:?} limitada a la pantalla: {:?}",
+                        [left, right, top, bottom]
+                    );
+                }
+                if strut.outside(width, height) {
+                    eprintln!(
+                        "crimson-wm: ventana 0x{window:x}: tramo de strut fuera de la pantalla: ese borde no reserva"
+                    );
+                }
+                strut
+            }
+            Err(defect) => {
+                let name = if defect.partial {
+                    "_NET_WM_STRUT_PARTIAL"
+                } else {
+                    "_NET_WM_STRUT"
+                };
+                eprintln!(
+                    "crimson-wm: ventana 0x{window:x}: {name} defectuosa ({:?}): sin reserva",
+                    defect.error
+                );
+                ewmh::Strut::default()
+            }
+        };
+        Ok(self.workspaces.set_strut(window, strut))
+    }
+
+    /// Recalcula el área de trabajo con las reservas efectivas de los
+    /// paneles (ADR 0012). Devuelve `true` si ha cambiado; entonces se
+    /// publica `_NET_WORKAREA` y quien llama reorganiza el mosaico. Las
+    /// flotantes no se mueven.
+    fn update_work_area(&mut self) -> bool {
+        let insets = self
+            .workspaces
+            .insets(self.screen.width, self.screen.height);
+        let work = layout::work_area(self.screen, insets);
+        if work.rect == self.work {
+            return false;
+        }
+        if work.limited {
+            eprintln!(
+                "crimson-wm: reservas limitadas: piden {insets:?}, que no dejan área de trabajo; queda al menos un píxel en cada eje"
+            );
+        }
+        let Rect {
+            x,
+            y,
+            width,
+            height,
+        } = work.rect;
+        eprintln!("crimson-wm: área de trabajo {x},{y} {width}x{height}");
+        self.work = work.rect;
+        self.dirty.workarea = true;
+        true
     }
 
     /// Da el foco a `target` según su modelo de entrada (ICCCM §4.1.7) y
@@ -1677,7 +1858,7 @@ impl<C: Connection> Wm<'_, C> {
                     let Some(frame) = self.frame_of(window)? else {
                         return Ok(());
                     };
-                    (!adopting || frame.rect != self.area).then_some(frame)
+                    (!adopting || frame.rect != self.screen).then_some(frame)
                 }
             };
             // Primero la propiedad: si no se puede actualizar sin perder
@@ -1728,7 +1909,7 @@ impl<C: Connection> Wm<'_, C> {
         if self.workspaces.get(window).map(|c| c.kind) != Some(Kind::Floating) {
             return Ok(());
         }
-        let frame = restore.frame.unwrap_or_else(|| Frame::fallback(self.area));
+        let frame = restore.frame.unwrap_or_else(|| Frame::fallback(self.work));
         let aux = ConfigureWindowAux::new()
             .x(i32::from(frame.rect.x))
             .y(i32::from(frame.rect.y))
@@ -2000,6 +2181,7 @@ impl<C: Connection> Wm<'_, C> {
                     self.atoms._NET_ACTIVE_WINDOW,
                     self.atoms._NET_CURRENT_DESKTOP,
                     self.atoms._NET_NUMBER_OF_DESKTOPS,
+                    self.atoms._NET_WORKAREA,
                 ] {
                     self.conn
                         .delete_property(self.root, property)
@@ -2092,12 +2274,12 @@ impl<C: Connection> Wm<'_, C> {
     /// Geometría del plan de un escritorio, sin tocar el apilamiento. Sirve
     /// también para los ocultos (salida normal).
     fn place(&mut self, desk: usize) -> Result<(), Fatal> {
-        let area = self.area;
+        let (work, screen) = (self.work, self.screen);
         let Some(clients) = self.workspaces.desk_mut(desk) else {
             return Ok(());
         };
         let mut changed = Vec::new();
-        for (window, rect) in clients.plan(area) {
+        for (window, rect) in clients.plan(work, screen) {
             if clients.set_geometry(window, rect) {
                 changed.push((window, rect));
             }
@@ -2250,6 +2432,15 @@ enum StateWrite {
     Refused,
     /// La ventana ya no existe.
     Gone,
+}
+
+fn strut_read(reply: &x11rb::protocol::xproto::GetPropertyReply) -> StrutRead {
+    StrutRead {
+        type_: reply.type_,
+        format: reply.format,
+        bytes_after: reply.bytes_after,
+        values: reply.value32().map(Iterator::collect).unwrap_or_default(),
+    }
 }
 
 fn state_read(reply: &x11rb::protocol::xproto::GetPropertyReply) -> StateRead {

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="400" height="2718" viewBox="0 0 400 2718" role="img" aria-labelledby="title desc" xml:lang="es">
-  <title id="title">Crimson WM, fase F9: flujo implementado</title>
+  <title id="title">Crimson WM, fase F10: flujo implementado</title>
   <desc id="desc">Diagrama técnico basado en el código fuente; no es una captura
     ni una prueba de ejecución. El display :0 se rechaza siempre, lo que protege
     la sesión principal solo mientras esta use :0. En un entorno de prueba con
@@ -24,7 +24,10 @@
     con ella y le devuelven el foco al cerrarse. Desde F9 el tipo EWMH
     (_NET_WM_WINDOW_TYPE) decide también las ventanas fijas: DOCK y
     NOTIFICATION en una capa superior y DESKTOP en la inferior, visibles en
-    todos los escritorios y sin foco. Cada paso indica sus códigos de salida. Aparte se muestra una selección de funciones pendientes.
+    todos los escritorios y sin foco. Desde F10 los DOCK reservan su borde
+    con _NET_WM_STRUT_PARTIAL o _NET_WM_STRUT: el mosaico usa el área de
+    trabajo resultante, publicada en _NET_WORKAREA, y la pantalla completa,
+    la pantalla física. Cada paso indica sus códigos de salida. Aparte se muestra una selección de funciones pendientes.
     Las salvaguardas reducen accidentes, pero no son una frontera de
     seguridad.</desc>
   <defs>
@@ -53,7 +56,7 @@
 
   <rect width="400" height="2718" fill="#FFFFFF"/>
 
-  <text class="h" x="20" y="30">Crimson WM · fase F9</text>
+  <text class="h" x="20" y="30">Crimson WM · fase F10</text>
   <text class="muted" x="20" y="52">Diagrama técnico del código actual;</text>
   <text class="muted" x="20" y="72">no es una captura ni prueba de ejecución.</text>
 
@@ -190,8 +193,8 @@
     <text class="muted" x="32" y="1950">(una por escritorio; sube con el foco)</text>
     <text class="muted" x="32" y="1970">WM_TRANSIENT_FOR: diálogo encima de su</text>
     <text class="muted" x="32" y="1990">principal, con ella; foco al cerrarlo</text>
-    <text class="muted" x="32" y="2010">Tipos: DOCK, NOTIFICATION y DESKTOP,</text>
-    <text class="muted" x="32" y="2030">fijas en su capa; en todos los escritorios</text>
+    <text class="muted" x="32" y="2010">Fijas: DOCK, NOTIFICATION y DESKTOP;</text>
+    <text class="muted" x="32" y="2030">los DOCK reservan borde (_NET_WORKAREA)</text>
     <text class="muted" x="32" y="2050">Lanzamiento: un hilo lanza y espera</text>
     <text class="muted" x="32" y="2070">Error X: se registra y se ignora</text>
     <text class="muted" x="32" y="2090">Save-set: si el WM termina, el servidor</text>
@@ -223,11 +226,11 @@
     <rect class="pending" x="8" y="2426" width="384" height="204" rx="6"/>
     <text class="h muted" x="20" y="2450">Pendiente (selección)</text>
     <text class="muted" x="20" y="2472">No es la hoja de ruta completa; fases</text>
-    <text class="muted" x="20" y="2492">y detalle en los ADR 0002 a 0011.</text>
+    <text class="muted" x="20" y="2492">y detalle en los ADR 0002 a 0012.</text>
     <text class="muted" x="20" y="2516">– Pruebas también con Xephyr</text>
     <text class="muted" x="20" y="2536">– Gestión limpia de señales</text>
     <text class="muted" x="20" y="2556">– Configuración (config.toml)</text>
-    <text class="muted" x="20" y="2576">– Paneles: struts y _NET_WORKAREA</text>
+    <text class="muted" x="20" y="2576">– Márgenes (gaps) y bordes</text>
     <text class="muted" x="20" y="2596">– Extensiones RandR y XKB</text>
     <text class="muted" x="20" y="2616">– _NET_WM_STATE_ABOVE/BELOW y sticky</text>
   </g>

@@ -1,5 +1,5 @@
-//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F9 (ADR 0007 a
-//! 0011). Genera lo que las herramientas instaladas no pueden: el
+//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F10 (ADR 0007
+//! a 0012). Genera lo que las herramientas instaladas no pueden: el
 //! `UnmapNotify` sintético de ICCCM §4.1.4, mensajes EWMH arbitrarios, la
 //! propiedad de una selección y una ventana que registra los mensajes
 //! `WM_PROTOCOLS` que recibe. No forma parte del WM: solo lo ejecutan los
@@ -32,7 +32,10 @@
 //!   `_NET_WM_WINDOW_TYPE`, en el orden dado (`DOCK` equivale a
 //!   `_NET_WM_WINDOW_TYPE_DOCK`; un nombre que empieza por `_` se usa tal
 //!   cual); `--dialog` equivale a `--type DIALOG`, y `--override-redirect`
-//!   crea la ventana override-redirect (el WM no la gestiona).
+//!   crea la ventana override-redirect (el WM no la gestiona). Desde F10:
+//!   `--strut L R T B` pone `_NET_WM_STRUT` y `--strut-partial V1 … V12`,
+//!   `_NET_WM_STRUT_PARTIAL` (CARDINAL de 32 bits; para valores mal
+//!   formados, las pruebas usan xprop).
 //!
 //! Solo se conecta a un DISPLAY de la forma `:N` con N distinto de 0.
 
@@ -209,6 +212,8 @@ fn client_window(
     let mut states: Vec<String> = Vec::new();
     let mut types: Vec<String> = Vec::new();
     let mut override_redirect = false;
+    let mut strut: Option<Vec<u32>> = None;
+    let mut strut_partial: Option<Vec<u32>> = None;
     let mut geometry: (i16, i16, u16, u16) = (0, 0, 200, 100);
     let mut border: u16 = 0;
     let mut transient_for: Option<String> = None;
@@ -237,6 +242,20 @@ fn client_window(
                 });
             }
             "--override-redirect" => override_redirect = true,
+            "--strut" => {
+                strut = Some(
+                    (0..4)
+                        .map(|_| next("VALOR")?.parse().map_err(Into::into))
+                        .collect::<Res<_>>()?,
+                )
+            }
+            "--strut-partial" => {
+                strut_partial = Some(
+                    (0..12)
+                        .map(|_| next("VALOR")?.parse().map_err(Into::into))
+                        .collect::<Res<_>>()?,
+                )
+            }
             "--geometry" => {
                 geometry = (
                     next("X")?.parse()?,
@@ -265,6 +284,8 @@ fn client_window(
         .collect::<Res<Vec<_>>>()?;
     let net_wm_state = atom(conn, "_NET_WM_STATE")?;
     let window_type = atom(conn, "_NET_WM_WINDOW_TYPE")?;
+    let strut_atom = atom(conn, "_NET_WM_STRUT")?;
+    let strut_partial_atom = atom(conn, "_NET_WM_STRUT_PARTIAL")?;
     let type_atoms = types
         .iter()
         .map(|name| atom(conn, name))
@@ -335,6 +356,17 @@ fn client_window(
                 AtomEnum::ATOM,
                 &type_atoms,
             )?;
+        }
+        for (property, values) in [(strut_atom, &strut), (strut_partial_atom, &strut_partial)] {
+            if let Some(values) = values {
+                conn.change_property32(
+                    PropMode::REPLACE,
+                    window,
+                    property,
+                    AtomEnum::CARDINAL,
+                    values,
+                )?;
+            }
         }
         if let Some(owner) = &transient_for {
             let owner = match owner.as_str() {

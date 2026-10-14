@@ -20,8 +20,10 @@ pub const WM_NAME: &str = "Crimson WM";
 ///   completa si alguno llega a gestionarse, pero no tiene un tratamiento
 ///   que anunciar (ADR 0011);
 /// - los estados de `_NET_WM_STATE` distintos de la pantalla completa
-///   (maximizar, sticky, above, below, etc.), `_NET_WORKAREA` y los struts,
-///   `_NET_FRAME_EXTENTS`, etc.
+///   (maximizar, sticky, above, below, etc.), `_NET_FRAME_EXTENTS`, etc.
+///
+/// Desde F10, `_NET_WM_STRUT`, `_NET_WM_STRUT_PARTIAL` y `_NET_WORKAREA`
+/// (ADR 0012): solo los paneles (`DOCK`) reservan espacio.
 pub const SUPPORTED: &[&str] = &[
     "_NET_SUPPORTED",
     "_NET_SUPPORTING_WM_CHECK",
@@ -44,6 +46,9 @@ pub const SUPPORTED: &[&str] = &[
     "_NET_WM_WINDOW_TYPE_DOCK",
     "_NET_WM_WINDOW_TYPE_DESKTOP",
     "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+    "_NET_WM_STRUT",
+    "_NET_WM_STRUT_PARTIAL",
+    "_NET_WORKAREA",
 ];
 
 /// Valor de `_NET_WM_DESKTOP` que pide estar en todos los escritorios. El
@@ -435,6 +440,227 @@ pub fn stacking(children: &[Window], managed: impl Fn(Window) -> bool) -> Vec<Wi
     children.iter().copied().filter(|&w| managed(w)).collect()
 }
 
+/// Valores de `_NET_WM_STRUT` (ADR 0012).
+pub const STRUT_LEN: u32 = 4;
+/// Valores de `_NET_WM_STRUT_PARTIAL` (ADR 0012).
+pub const STRUT_PARTIAL_LEN: u32 = 12;
+
+/// Borde de la pantalla, en el orden de los valores de los struts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl Side {
+    pub const ALL: [Side; 4] = [Side::Left, Side::Right, Side::Top, Side::Bottom];
+
+    fn index(self) -> usize {
+        match self {
+            Side::Left => 0,
+            Side::Right => 1,
+            Side::Top => 2,
+            Side::Bottom => 3,
+        }
+    }
+}
+
+/// Reserva declarada por un cliente en un borde: grosor desde el borde de
+/// la raíz y tramo del borde que ocupa, en coordenadas de la raíz, con el
+/// final incluido (EWMH). Un grosor 0 no reserva nada.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reservation {
+    pub thickness: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Struts de una ventana, ya validados, con los valores declarados por el
+/// cliente (sin recortar). La reserva efectiva se calcula aparte, con la
+/// geometría de la pantalla (`Strut::effective`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Strut {
+    sides: [Reservation; 4],
+}
+
+impl Strut {
+    pub fn side(&self, side: Side) -> Reservation {
+        self.sides[side.index()]
+    }
+
+    /// No reserva nada en ningún borde.
+    pub fn is_empty(&self) -> bool {
+        self.sides.iter().all(|r| r.thickness == 0)
+    }
+
+    /// Grosor efectivo de cada borde (izquierda, derecha, arriba, abajo)
+    /// en una raíz de `width` × `height`:
+    /// - un tramo que no toca la raíz (`start` fuera de ella) no reserva
+    ///   nada (correspondería a un monitor que no existe);
+    /// - un tramo que se sale de la raíz cuenta solo en la parte que la toca,
+    ///   así que basta con que la toque;
+    /// - el grosor se limita a la dimensión de la raíz perpendicular al
+    ///   borde.
+    ///
+    /// El área de trabajo resultante la limita después `layout::work_area`.
+    pub fn effective(&self, width: u16, height: u16) -> [u32; 4] {
+        Side::ALL.map(|side| {
+            let r = self.side(side);
+            let (along, across) = match side {
+                Side::Left | Side::Right => (height, width),
+                Side::Top | Side::Bottom => (width, height),
+            };
+            if r.thickness == 0 || r.start >= u32::from(along) {
+                0
+            } else {
+                r.thickness.min(u32::from(across))
+            }
+        })
+    }
+
+    /// Algún borde con grosor tiene un tramo que no toca la raíz.
+    pub fn outside(&self, width: u16, height: u16) -> bool {
+        let effective = self.effective(width, height);
+        Side::ALL
+            .iter()
+            .zip(effective)
+            .any(|(&side, e)| self.side(side).thickness > 0 && e == 0)
+    }
+}
+
+/// Lo que devolvió `GetProperty(propiedad, AnyPropertyType, 0, longitud)`
+/// de un strut, como `StateRead`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StrutRead {
+    /// 0 (None) si la propiedad no existe.
+    pub type_: Atom,
+    pub format: u8,
+    pub bytes_after: u32,
+    pub values: Vec<u32>,
+}
+
+/// Qué propiedad da la reserva de una ventana.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrutSource {
+    /// Ninguna de las dos existe.
+    None,
+    /// `_NET_WM_STRUT_PARTIAL`, válida.
+    Partial,
+    /// `_NET_WM_STRUT`, válida, sin `_NET_WM_STRUT_PARTIAL`.
+    Legacy,
+}
+
+/// Defecto de una propiedad de strut presente.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrutError {
+    /// No es `CARDINAL` de formato 32.
+    Type { type_: Atom, format: u8 },
+    /// No tiene exactamente los valores que define EWMH (4 o 12).
+    Length { values: usize, bytes_after: u32 },
+    /// Un borde con grosor cuyo tramo empieza después de terminar.
+    Range(Side),
+}
+
+/// Propiedad de strut defectuosa: cuál y por qué.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StrutDefect {
+    pub partial: bool,
+    pub error: StrutError,
+}
+
+/// Interpreta las dos propiedades de strut de una ventana (EWMH):
+/// - `_NET_WM_STRUT_PARTIAL` válida: se usa, y `_NET_WM_STRUT` se ignora;
+/// - `_NET_WM_STRUT_PARTIAL` ausente: se usa `_NET_WM_STRUT` si es válida,
+///   con cada tramo igual al borde completo;
+/// - `_NET_WM_STRUT_PARTIAL` presente pero mal formada: es un defecto y no
+///   se recurre a `_NET_WM_STRUT` (ADR 0012);
+/// - las dos ausentes: sin reserva.
+///
+/// `width` y `height` son los de la raíz, para los tramos completos de
+/// `_NET_WM_STRUT`.
+pub fn struts(
+    partial: &StrutRead,
+    legacy: &StrutRead,
+    cardinal: Atom,
+    width: u16,
+    height: u16,
+) -> Result<(StrutSource, Strut), StrutDefect> {
+    if partial.type_ != 0 {
+        return parse_strut(partial, cardinal, STRUT_PARTIAL_LEN)
+            .map(|values| {
+                let mut sides = [Reservation::default(); 4];
+                for (i, side) in sides.iter_mut().enumerate() {
+                    *side = Reservation {
+                        thickness: values[i],
+                        start: values[4 + 2 * i],
+                        end: values[5 + 2 * i],
+                    };
+                }
+                (StrutSource::Partial, sides)
+            })
+            .and_then(|(source, sides)| checked(sides).map(|strut| (source, strut)))
+            .map_err(|error| StrutDefect {
+                partial: true,
+                error,
+            });
+    }
+    if legacy.type_ == 0 {
+        return Ok((StrutSource::None, Strut::default()));
+    }
+    let full = |side: Side| {
+        let along = match side {
+            Side::Left | Side::Right => height,
+            Side::Top | Side::Bottom => width,
+        };
+        u32::from(along).saturating_sub(1)
+    };
+    parse_strut(legacy, cardinal, STRUT_LEN)
+        .map(|values| {
+            let sides = Side::ALL.map(|side| Reservation {
+                thickness: values[side.index()],
+                start: 0,
+                end: full(side),
+            });
+            (StrutSource::Legacy, Strut { sides })
+        })
+        .map_err(|error| StrutDefect {
+            partial: false,
+            error,
+        })
+}
+
+/// Valores de una propiedad de strut presente: `CARDINAL` de formato 32,
+/// con exactamente `len` valores leídos enteros.
+fn parse_strut(read: &StrutRead, cardinal: Atom, len: u32) -> Result<Vec<u32>, StrutError> {
+    if read.type_ != cardinal || read.format != 32 {
+        return Err(StrutError::Type {
+            type_: read.type_,
+            format: read.format,
+        });
+    }
+    if read.bytes_after != 0 || u32::try_from(read.values.len()) != Ok(len) {
+        return Err(StrutError::Length {
+            values: read.values.len(),
+            bytes_after: read.bytes_after,
+        });
+    }
+    Ok(read.values.clone())
+}
+
+/// Un borde con grosor necesita un tramo con `start <= end`. Los bordes sin
+/// grosor no reservan nada y su tramo no importa.
+fn checked(sides: [Reservation; 4]) -> Result<Strut, StrutError> {
+    for side in Side::ALL {
+        let r = sides[side.index()];
+        if r.thickness > 0 && r.start > r.end {
+            return Err(StrutError::Range(side));
+        }
+    }
+    Ok(Strut { sides })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,7 +689,12 @@ mod tests {
 
     #[test]
     fn lista_soportada_exacta() {
-        assert_eq!(SUPPORTED.len(), 21);
+        assert_eq!(SUPPORTED.len(), 24);
+        // U22: struts y área de trabajo, al final (ADR 0012).
+        assert_eq!(
+            &SUPPORTED[21..],
+            ["_NET_WM_STRUT", "_NET_WM_STRUT_PARTIAL", "_NET_WORKAREA"]
+        );
         assert!(SUPPORTED.contains(&"_NET_WM_STATE"));
         assert!(SUPPORTED.contains(&"_NET_WM_STATE_FULLSCREEN"));
         for (i, name) in SUPPORTED.iter().enumerate() {
@@ -478,9 +709,6 @@ mod tests {
             "_NET_WM_STATE_ABOVE",
             "_NET_WM_STATE_BELOW",
             "_NET_FRAME_EXTENTS",
-            "_NET_WORKAREA",
-            "_NET_WM_STRUT",
-            "_NET_WM_STRUT_PARTIAL",
             "_NET_WM_NAME",
             "_NET_DESKTOP_NAMES",
             "_NET_WM_PING",
@@ -884,5 +1112,206 @@ mod tests {
         assert_eq!(stacking(&children, |w| managed.contains(&w)), vec![1, 2, 3]);
         assert_eq!(stacking(&[], |_| true), Vec::<Window>::new());
         assert_eq!(stacking(&children, |_| false), Vec::<Window>::new());
+    }
+
+    // U22: _NET_WM_STRUT y _NET_WM_STRUT_PARTIAL (ADR 0012).
+
+    const CARDINAL: Atom = 6;
+
+    fn prop(values: &[u32]) -> StrutRead {
+        StrutRead {
+            type_: CARDINAL,
+            format: 32,
+            bytes_after: 0,
+            values: values.to_vec(),
+        }
+    }
+
+    fn absent() -> StrutRead {
+        StrutRead::default()
+    }
+
+    fn parse(partial: &StrutRead, legacy: &StrutRead) -> Result<(StrutSource, Strut), StrutDefect> {
+        struts(partial, legacy, CARDINAL, 1280, 720)
+    }
+
+    const TOP_40: [u32; 12] = [0, 0, 40, 0, 0, 0, 0, 0, 0, 1279, 0, 0];
+
+    #[test]
+    fn partial_valida() {
+        let (source, strut) = parse(&prop(&TOP_40), &absent()).unwrap();
+        assert_eq!(source, StrutSource::Partial);
+        assert_eq!(
+            strut.side(Side::Top),
+            Reservation {
+                thickness: 40,
+                start: 0,
+                end: 1279
+            }
+        );
+        assert_eq!(strut.side(Side::Left), Reservation::default());
+        assert_eq!(strut.effective(1280, 720), [0, 0, 40, 0]);
+        // Los doce valores en su sitio.
+        let all = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let (_, s) = parse(&prop(&all), &absent()).unwrap();
+        let got: Vec<(u32, u32, u32)> = Side::ALL
+            .iter()
+            .map(|&side| {
+                let r = s.side(side);
+                (r.thickness, r.start, r.end)
+            })
+            .collect();
+        assert_eq!(got, [(1, 5, 6), (2, 7, 8), (3, 9, 10), (4, 11, 12)]);
+    }
+
+    #[test]
+    fn prioridad_y_tres_estados() {
+        let legacy = prop(&[0, 0, 0, 30]);
+        // PARTIAL válida: STRUT se ignora, sea como sea.
+        let (source, strut) = parse(&prop(&TOP_40), &legacy).unwrap();
+        assert_eq!(
+            (source, strut.effective(1280, 720)),
+            (StrutSource::Partial, [0, 0, 40, 0])
+        );
+        let bad_legacy = prop(&[1, 2]);
+        assert_eq!(
+            parse(&prop(&TOP_40), &bad_legacy).unwrap().0,
+            StrutSource::Partial
+        );
+        // PARTIAL ausente: STRUT válida, con tramos completos.
+        let (source, strut) = parse(&absent(), &legacy).unwrap();
+        assert_eq!(source, StrutSource::Legacy);
+        assert_eq!(
+            strut.side(Side::Bottom),
+            Reservation {
+                thickness: 30,
+                start: 0,
+                end: 1279
+            }
+        );
+        let (_, strut) = parse(&absent(), &prop(&[25, 0, 0, 0])).unwrap();
+        assert_eq!(strut.side(Side::Left).end, 719);
+        // Las dos ausentes: sin reserva.
+        let (source, strut) = parse(&absent(), &absent()).unwrap();
+        assert_eq!(source, StrutSource::None);
+        assert!(strut.is_empty());
+        // PARTIAL presente pero mal formada: defecto, sin recurrir a STRUT.
+        let short = prop(&[0, 0, 40, 0]);
+        assert_eq!(
+            parse(&short, &legacy),
+            Err(StrutDefect {
+                partial: true,
+                error: StrutError::Length {
+                    values: 4,
+                    bytes_after: 0
+                }
+            })
+        );
+        // STRUT mal formada sin PARTIAL: defecto de STRUT.
+        assert!(!parse(&absent(), &bad_legacy).unwrap_err().partial);
+    }
+
+    #[test]
+    fn propiedades_mal_formadas() {
+        let mut long = prop(&TOP_40);
+        long.bytes_after = 4;
+        let mut wrong_type = prop(&TOP_40);
+        wrong_type.type_ = 4;
+        let mut wrong_format = prop(&[]);
+        wrong_format.format = 8;
+        let mut thirteen = TOP_40.to_vec();
+        thirteen.push(0);
+        for (read, error) in [
+            (
+                long,
+                StrutError::Length {
+                    values: 12,
+                    bytes_after: 4,
+                },
+            ),
+            (
+                wrong_type,
+                StrutError::Type {
+                    type_: 4,
+                    format: 32,
+                },
+            ),
+            (
+                wrong_format,
+                StrutError::Type {
+                    type_: CARDINAL,
+                    format: 8,
+                },
+            ),
+            (
+                prop(&thirteen),
+                StrutError::Length {
+                    values: 13,
+                    bytes_after: 0,
+                },
+            ),
+            (
+                prop(&[]),
+                StrutError::Length {
+                    values: 0,
+                    bytes_after: 0,
+                },
+            ),
+        ] {
+            assert_eq!(
+                parse(&read, &absent()),
+                Err(StrutDefect {
+                    partial: true,
+                    error
+                }),
+                "{read:?}"
+            );
+        }
+        // Tramo invertido en un borde con grosor: defecto; sin grosor, no
+        // importa.
+        let inverted = [0, 0, 40, 0, 0, 0, 0, 0, 900, 100, 0, 0];
+        assert_eq!(
+            parse(&prop(&inverted), &absent()).unwrap_err().error,
+            StrutError::Range(Side::Top)
+        );
+        let ignored = [0, 0, 0, 0, 9, 1, 9, 1, 9, 1, 9, 1];
+        assert!(parse(&prop(&ignored), &absent()).unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn reserva_efectiva_de_los_tramos() {
+        // Tramo parcial: cuenta mientras toque la raíz.
+        let partial = [0, 0, 40, 0, 0, 0, 0, 0, 0, 399, 0, 0];
+        let (_, s) = parse(&prop(&partial), &absent()).unwrap();
+        assert_eq!(s.effective(1280, 720), [0, 0, 40, 0]);
+        // Tramo fuera de la raíz (otro monitor): no reserva.
+        let outside = [0, 0, 40, 0, 0, 0, 0, 0, 1280, 2000, 0, 0];
+        let (_, s) = parse(&prop(&outside), &absent()).unwrap();
+        assert_eq!(s.effective(1280, 720), [0, 0, 0, 0]);
+        assert!(s.outside(1280, 720));
+        // Tramo que se sale: cuenta.
+        let beyond = [0, 0, 0, 30, 0, 0, 0, 0, 0, 0, 1000, u32::MAX];
+        let (_, s) = parse(&prop(&beyond), &absent()).unwrap();
+        assert_eq!(s.effective(1280, 720), [0, 0, 0, 30]);
+        assert!(!s.outside(1280, 720));
+        // Grosores excesivos: se limitan a la dimensión perpendicular.
+        let huge = [
+            u32::MAX,
+            5000,
+            u32::MAX,
+            900,
+            0,
+            719,
+            0,
+            719,
+            0,
+            1279,
+            0,
+            1279,
+        ];
+        let (_, s) = parse(&prop(&huge), &absent()).unwrap();
+        assert_eq!(s.effective(1280, 720), [1280, 1280, 720, 720]);
+        // Los valores declarados se conservan sin recortar.
+        assert_eq!(s.side(Side::Left).thickness, u32::MAX);
     }
 }

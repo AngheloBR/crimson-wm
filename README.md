@@ -4,35 +4,39 @@ Gestor de ventanas para X11, escrito en Rust y dirigido inicialmente a
 Debian 13 (Trixie), orientado a la gestión de ventanas en mosaico. Por ahora
 es un prototipo con un único diseño, master-stack, ocho escritorios
 virtuales, pantalla completa, diálogos que siguen a su ventana principal,
-tipos de ventana EWMH con paneles y fondos fijos en todos los escritorios y
-compatibilidad parcial con ICCCM y EWMH (ver «Estado»).
+tipos de ventana EWMH con paneles y fondos fijos en todos los escritorios,
+paneles que reservan espacio en los bordes y compatibilidad parcial con
+ICCCM y EWMH (ver «Estado»).
 
 ## Estado
 
-Fase F9: tipos de ventana EWMH (`_NET_WM_WINDOW_TYPE`), ventanas fijas y
-capas de apilamiento, sobre los diálogos y ventanas transitorias, la
+Fase F10: struts y área de trabajo (`_NET_WM_STRUT`,
+`_NET_WM_STRUT_PARTIAL` y `_NET_WORKAREA`), sobre los tipos de ventana EWMH,
+las ventanas fijas y las capas de apilamiento, los diálogos y ventanas transitorias, la
 pantalla completa, la compatibilidad ICCCM/EWMH, los escritorios virtuales,
 el lanzamiento de aplicaciones, el foco por teclado y el mosaico
 master-stack. **Todavía no es un gestor de ventanas utilizable:** solo
 arranca en un servidor X de prueba que supere las salvaguardas del ADR
 0003, coloca las ventanas normales en mosaico, deja flotantes los diálogos
 y los mantiene con su ventana principal, deja paneles, avisos y fondos
-fijos en su capa y en todos los escritorios, gestiona el foco con el teclado,
+fijos en su capa y en todos los escritorios, deja que los paneles reserven
+su borde, gestiona el foco con el teclado,
 reparte las ventanas en ocho escritorios, pone una ventana a pantalla
 completa, cierra ventanas, lanza seis programas fijos y termina con el
 atajo provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones,
-panel propio, espacio reservado para paneles (struts), varios monitores ni
-configuración.
+panel propio, varios monitores ni configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
 (2026-10-11). Últimos resultados registrados, todos del 2026-10-14 en Xvfb
-sobre el binario de depuración de F9 (detalles y limitaciones en los ADR
-0003 a 0011):
+sobre el binario de depuración de F10 (detalles y limitaciones en los ADR
+0003 a 0012):
 
-- Pruebas unitarias U1–U21 (126 pruebas de `cargo test`): pasaron.
-- Aceptación de F9: A88–A102 pasaron y **A103 quedó parcial**, porque la
+- Pruebas unitarias U1–U22 (139 pruebas de `cargo test`): pasaron.
+- Aceptación de F10: A104–A119 pasaron y **A120 quedó parcial**, porque la
   consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
   programas falsos, nunca las aplicaciones reales.
+- Regresión de F9: A88–A102 pasaron y **A103 quedó parcial** por el mismo
+  motivo.
 - Regresión de F8: A76–A86 pasaron y **A87 quedó parcial** por el mismo
   motivo.
 - Regresión de F7: A63 y A65–A74 pasaron y **A75 quedó parcial** por el
@@ -299,9 +303,9 @@ se leyeron del servidor.*
   `NOTIFICATION`, y la pantalla completa enfocada.
 - **Un cambio de tipo** con la ventana ya visible se ignora hasta que la
   aplicación la retire y la vuelva a mostrar.
-- **Aún no:** el panel no reserva espacio (sin struts ni `_NET_WORKAREA`),
-  no hay `_NET_WM_STATE_ABOVE`/`BELOW` ni ventanas sticky generales, ni
-  Crimson Panel.
+- **Aún no:** no hay `_NET_WM_STATE_ABOVE`/`BELOW` ni ventanas sticky
+  generales, ni Crimson Panel. Desde F10 los paneles sí reservan espacio
+  (ver «Struts y área de trabajo»).
 
 ![Diagrama de F9: flujo de clasificación, los 14 tipos, capas de apilamiento y pantalla completa, ventanas fijas en dos escritorios y lo aplazado](docs/images/crimson-wm-f9-window-types.png)
 
@@ -309,6 +313,40 @@ se leyeron del servidor.*
 Fuente editable: `docs/images/crimson-wm-f9-window-types.svg`.*
 
 Detalles, casos límite y limitaciones en el ADR 0011.
+
+## Struts y área de trabajo (F10)
+
+![Captura real en Xvfb: con F9, el panel superior tapa la parte de arriba del mosaico; con F10, el mosaico empieza debajo de la franja reservada; y, al pasar el panel abajo con su reserva, el mosaico se reajusta](docs/images/crimson-wm-f10-comparison.png)
+
+*Capturas auténticas en Xvfb aislados de 1280 × 720 (pruebas A118 y A119):
+el primer panel con el binario de F9 (commit 2b2df85), los otros dos con
+el de F10. Volcados de `xwd -root` sin retoques; los rótulos de pila y
+área se leyeron del servidor.*
+
+- **Reservas:** un panel (`DOCK`) puede reservar su borde con
+  `_NET_WM_STRUT_PARTIAL` o, si no la tiene, con `_NET_WM_STRUT`. Las demás
+  ventanas no reservan nada.
+- **Mosaico:** usa el área de trabajo, la pantalla menos las reservas, y se
+  reajusta cuando un panel aparece, cambia su reserva o desaparece. Las
+  ventanas flotantes no se mueven.
+- **Varios paneles:** en cada borde cuenta la reserva mayor, no la suma.
+- **Pantalla completa:** ocupa la pantalla entera, también bajo los
+  paneles. Los diálogos nuevos se centran dentro del área de trabajo.
+- **`_NET_WORKAREA`:** el área de trabajo, igual en los ocho escritorios.
+  Se borra al salir.
+- **Valores defectuosos o excesivos:** se registran y no reservan nada, o se
+  limitan para que siempre quede al menos un píxel en cada eje. Si
+  `_NET_WM_STRUT_PARTIAL` es defectuosa, no se usa `_NET_WM_STRUT` en su
+  lugar.
+- **Aún no:** varios monitores, áreas no rectangulares (el hueco junto a un
+  panel parcial no se aprovecha), márgenes ni Crimson Panel.
+
+![Diagrama de F10: lectura de los struts, las cuatro reservas y un tramo parcial, varios paneles, pantalla física frente a área de trabajo y los ocho escritorios, valores inválidos y extremos, y lo aplazado](docs/images/crimson-wm-f10-workarea.png)
+
+*Diagrama técnico elaborado a partir del código de F10; no es una
+captura. Fuente editable: `docs/images/crimson-wm-f10-workarea.svg`.*
+
+Detalles, casos límite y limitaciones en el ADR 0012.
 
 ## Arranque y eventos
 
@@ -368,7 +406,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U21)
+### Unitarias (U1–U22)
 
 ```sh
 cargo test --locked
@@ -565,10 +603,33 @@ tests/acceptance/f9/run.sh [BINARIO]
 - Los resultados se guardan en un directorio nuevo `crimson-f9.XXXXXX`
   dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
 
+### Aceptación de F10 (A104–A120)
+
+```sh
+cargo build --locked --bins --examples
+tests/acceptance/f10/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas, código de salida, aislamiento y
+  programas falsos que el arnés de F9.
+- `test-client` también pone struts antes de mapear la ventana (`--strut L R
+  T B` y `--strut-partial V1 … V12`). Los valores mal formados y los
+  cambios dinámicos se escriben con `xprop`.
+- Cada comprobación del área contrasta `_NET_WORKAREA` con la geometría
+  real de las ventanas.
+- A118 usa el binario de F9 que indique `CRIMSON_F9_BIN`, compilado a
+  partir de `git archive 2b2df85` en un directorio temporal, sin worktree
+  ni red. Sin esa variable, A118 y la composición de A119 quedan OMITIDAS.
+- A119 hace las capturas de F10 y compone y valida la comparación. La
+  imagen del repositorio procede de esa prueba.
+- A120 equivale a A9 y queda siempre parcial.
+- Los resultados se guardan en un directorio nuevo `crimson-f10.XXXXXX`
+  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+
 ### Imágenes de los diagramas
 
 ```sh
-tools/render-svg.py docs/images/crimson-wm-f9-window-types.svg docs/images/crimson-wm-f9-window-types.png --scale 2
+tools/render-svg.py docs/images/crimson-wm-f10-workarea.svg docs/images/crimson-wm-f10-workarea.png --scale 2
 ```
 
 Renderiza un SVG a PNG con las bibliotecas del sistema (librsvg y cairo),
@@ -619,6 +680,8 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
   transitorias de F8.
 - `docs/adr/0011-tipos-de-ventana-ewmh.md`: tipos de ventana EWMH, ventanas
   fijas y capas de apilamiento de F9.
+- `docs/adr/0012-struts-y-area-de-trabajo.md`: struts y área de trabajo de
+  F10.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior

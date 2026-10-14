@@ -32,6 +32,12 @@
   reconocido» lo calcula ahora `ewmh::TypeAtoms`. Desde F9, `arrange`
   termina con `apply_layers`. *La limitación «Paneles y escritorio» está
   resuelta en parte: siguen sin struts.*
+- **Actualización F10 (2026-10-14):** el mosaico usa el área de trabajo:
+  la pantalla menos lo que reservan los paneles con `_NET_WM_STRUT_PARTIAL`
+  o `_NET_WM_STRUT` (`Clients::plan(work, screen)`). La proporción del 50 %
+  se calcula sobre ella. Al cambiar las reservas, el escritorio activo se
+  reorganiza al momento y los ocultos al mostrarse; las flotantes no se
+  mueven (ADR 0012).
 
 ## Contexto
 

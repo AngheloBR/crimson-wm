@@ -24,6 +24,13 @@
   `0xFFFFFFFF` y están en `_NET_CLIENT_LIST(_STACKING)`; las peticiones
   EWMH sobre ellas se rechazan. Un cambio de `_NET_WM_WINDOW_TYPE` con la
   ventana gestionada se registra y se ignora (ADR 0011).
+- **Actualización F10 (2026-10-14):** `_NET_SUPPORTED` declara además
+  `_NET_WM_STRUT`, `_NET_WM_STRUT_PARTIAL` y `_NET_WORKAREA` (24 átomos).
+  `_NET_WORKAREA` se publica en la raíz (8 rectángulos iguales) y se borra
+  al salir con las demás propiedades. Los struts se siguen con
+  `PropertyNotify` y solo cuentan en los `DOCK` (ADR 0012). *Los «paneles
+  con espacio reservado» citados como aplazados están resueltos para una
+  sola pantalla.*
 
 ![Diagrama de F6: arranque e identificación, mensajes ICCCM y EWMH entre las aplicaciones, el servidor X11 y Crimson WM, políticas de las peticiones externas, salida y funciones aplazadas](../images/crimson-wm-f6-icccm-ewmh.png)
 

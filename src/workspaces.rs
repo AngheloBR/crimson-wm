@@ -9,7 +9,9 @@
 
 use x11rb::protocol::xproto::Window;
 
-use crate::clients::{Class, Client, Clients, Kind, Layer, Removed, Restore};
+use crate::clients::{Class, Client, Clients, FixedKind, Kind, Layer, Removed, Restore};
+use crate::ewmh::Strut;
+use crate::layout::Insets;
 
 /// Número fijo de escritorios.
 pub const COUNT: usize = 8;
@@ -54,9 +56,13 @@ pub struct Entered {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fixed {
     pub window: Window,
-    pub layer: Layer,
+    pub kind: FixedKind,
     /// Orden de gestión, compartido con `Client::order`.
     pub order: u64,
+    /// Struts válidos declarados por un panel (ADR 0012), sin recortar:
+    /// vacío si no reserva nada, si su propiedad es defectuosa o si no es un
+    /// panel. La reserva efectiva se calcula al usarla (`insets`).
+    pub strut: Strut,
 }
 
 /// Invariantes:
@@ -162,7 +168,7 @@ impl Workspaces {
 
     /// Gestiona una ventana fija (ADR 0011). Devuelve `false`, sin cambiar
     /// nada, si ya estaba gestionada, en un escritorio o como fija.
-    pub fn manage_fixed(&mut self, window: Window, layer: Layer) -> bool {
+    pub fn manage_fixed(&mut self, window: Window, kind: FixedKind) -> bool {
         if self.is_managed(window) {
             return false;
         }
@@ -170,10 +176,43 @@ impl Workspaces {
         self.next_order += 1;
         self.fixed.push(Fixed {
             window,
-            layer,
+            kind,
             order,
+            strut: Strut::default(),
         });
         true
+    }
+
+    /// Cambia los struts de una ventana fija que reserva espacio (un panel,
+    /// ADR 0012). Devuelve `true` si han cambiado; `false`, sin cambiar
+    /// nada, si no es un panel gestionado o ya tenía esos valores.
+    pub fn set_strut(&mut self, window: Window, strut: Strut) -> bool {
+        match self.fixed.iter_mut().find(|f| f.window == window) {
+            Some(f) if f.kind.reserves() && f.strut != strut => {
+                f.strut = strut;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Reserva efectiva de todos los paneles en una pantalla de `width` ×
+    /// `height` (ADR 0012): en cada borde, el máximo de sus reservas
+    /// efectivas. El resultado no depende del orden de los paneles.
+    pub fn insets(&self, width: u16, height: u16) -> Insets {
+        self.fixed
+            .iter()
+            .filter(|f| f.kind.reserves())
+            .map(|f| {
+                let [left, right, top, bottom] = f.strut.effective(width, height);
+                Insets {
+                    left,
+                    right,
+                    top,
+                    bottom,
+                }
+            })
+            .fold(Insets::default(), Insets::max)
     }
 
     /// La ventana fija, si lo es.
@@ -186,7 +225,7 @@ impl Workspaces {
     pub fn fixed_in(&self, layer: Layer) -> Vec<Window> {
         self.fixed
             .iter()
-            .filter(|f| f.layer == layer)
+            .filter(|f| f.kind.layer() == layer)
             .map(|f| f.window)
             .collect()
     }
@@ -465,6 +504,11 @@ impl Workspaces {
                 f.window
             );
             assert!(self.owner_of(f.window).is_none());
+            assert!(
+                f.kind.reserves() || f.strut.is_empty(),
+                "fija {} que no es un panel con struts",
+                f.window
+            );
         }
         for (i, w) in list.iter().enumerate() {
             assert!(!list[i + 1..].contains(w), "_NET_CLIENT_LIST repetida");
@@ -980,16 +1024,16 @@ mod tests {
     fn ventanas_fijas_fuera_de_los_escritorios() {
         let mut ws = Workspaces::default();
         ws.manage(1, TILED);
-        assert!(ws.manage_fixed(2, Layer::Above));
-        assert!(ws.manage_fixed(3, Layer::Below));
+        assert!(ws.manage_fixed(2, FixedKind::Dock));
+        assert!(ws.manage_fixed(3, FixedKind::Desktop));
         ws.switch(4);
-        assert!(ws.manage_fixed(4, Layer::Above));
+        assert!(ws.manage_fixed(4, FixedKind::Notification));
         ws.manage(5, FLOATING);
         // No se duplican, ni entre fijas ni con los escritorios.
-        assert!(!ws.manage_fixed(2, Layer::Below));
-        assert!(!ws.manage_fixed(1, Layer::Above));
+        assert!(!ws.manage_fixed(2, FixedKind::Desktop));
+        assert!(!ws.manage_fixed(1, FixedKind::Dock));
         assert!(!ws.manage(2, TILED));
-        assert_eq!(ws.fixed(2).map(|f| f.layer), Some(Layer::Above));
+        assert_eq!(ws.fixed(2).map(|f| f.kind.layer()), Some(Layer::Above));
         // Sin escritorio: nada de lo que actúa sobre los escritorios las ve.
         for w in [2, 3, 4] {
             assert!(ws.is_managed(w));
@@ -1025,12 +1069,112 @@ mod tests {
     #[test]
     fn una_fija_no_es_propietaria_ni_dependiente() {
         let mut ws = Workspaces::default();
-        ws.manage_fixed(1, Layer::Above);
+        ws.manage_fixed(1, FixedKind::Dock);
         ws.manage(2, transient(1));
         assert_eq!(ws.owner_of(2), None, "una fija no es propietaria");
         assert_eq!(ws.dependents(1), Vec::<Window>::new());
         assert_eq!(ws.focus_return(Some(1), 0), None);
         assert_eq!(ws.floating_stack(0), vec![2]);
+        ws.assert_consistent();
+    }
+
+    // U22: reservas de los paneles (ADR 0012).
+
+    const SCREEN: crate::layout::Rect = crate::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 1280,
+        height: 720,
+    };
+
+    /// Strut con `_NET_WM_STRUT_PARTIAL` (ya validado).
+    fn partial(values: [u32; 12]) -> Strut {
+        let read = crate::ewmh::StrutRead {
+            type_: 6,
+            format: 32,
+            bytes_after: 0,
+            values: values.to_vec(),
+        };
+        crate::ewmh::struts(&read, &crate::ewmh::StrutRead::default(), 6, 1280, 720)
+            .unwrap()
+            .1
+    }
+
+    fn top(thickness: u32) -> Strut {
+        partial([0, 0, thickness, 0, 0, 0, 0, 0, 0, 1279, 0, 0])
+    }
+
+    fn random_strut(n: u64) -> Strut {
+        match n {
+            0 => Strut::default(),
+            1 => top(40),
+            2 => partial([
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+                0,
+                9,
+                0,
+                9,
+                0,
+                9,
+                0,
+                9,
+            ]),
+            _ => partial([300, 0, 0, 30, 0, 719, 0, 0, 0, 0, 0, 1279]),
+        }
+    }
+
+    #[test]
+    fn reservas_de_varios_paneles() {
+        let mut ws = Workspaces::default();
+        assert_eq!(ws.insets(1280, 720), Insets::default());
+        ws.manage_fixed(1, FixedKind::Dock);
+        ws.manage_fixed(2, FixedKind::Dock);
+        ws.manage_fixed(3, FixedKind::Dock);
+        assert!(ws.set_strut(1, top(30)));
+        // Apilado sobre el primero: declara 60 desde el borde.
+        assert!(ws.set_strut(2, top(60)));
+        assert!(ws.set_strut(3, partial([0, 0, 0, 25, 0, 0, 0, 0, 0, 0, 0, 1279])));
+        assert!(
+            !ws.set_strut(3, partial([0, 0, 0, 25, 0, 0, 0, 0, 0, 0, 0, 1279])),
+            "sin cambios"
+        );
+        // Máximo por borde, no suma.
+        assert_eq!(
+            ws.insets(1280, 720),
+            Insets {
+                top: 60,
+                bottom: 25,
+                ..Insets::default()
+            }
+        );
+        // Retirar el más grueso deja el otro.
+        ws.unmanage_fixed(2);
+        assert_eq!(ws.insets(1280, 720).top, 30);
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn solo_los_paneles_reservan() {
+        let mut ws = Workspaces::default();
+        ws.manage_fixed(1, FixedKind::Notification);
+        ws.manage_fixed(2, FixedKind::Desktop);
+        ws.manage(3, TILED);
+        for w in [1, 2, 3, 9] {
+            assert!(!ws.set_strut(w, top(100)), "{w}");
+        }
+        assert_eq!(ws.insets(1280, 720), Insets::default());
+        // Un tramo fuera de la raíz no reserva; uno excesivo se limita.
+        ws.manage_fixed(4, FixedKind::Dock);
+        ws.set_strut(4, partial([0, 0, 50, 0, 0, 0, 0, 0, 2000, 3000, 0, 0]));
+        assert_eq!(ws.insets(1280, 720), Insets::default());
+        ws.set_strut(4, top(u32::MAX));
+        assert_eq!(ws.insets(1280, 720).top, 720);
+        let work = crate::layout::work_area(SCREEN, ws.insets(1280, 720));
+        assert!(work.limited);
+        assert_eq!(work.rect.height, 1);
         ws.assert_consistent();
     }
 
@@ -1110,9 +1254,17 @@ mod tests {
                 8 if next(5) == 0 => {
                     // Ventanas fijas (ADR 0011).
                     if next(2) == 0 {
-                        let layer = [Layer::Above, Layer::Below][usize::try_from(next(2)).unwrap()];
+                        let kinds = [FixedKind::Dock, FixedKind::Notification, FixedKind::Desktop];
+                        let kind = kinds[usize::try_from(next(3)).unwrap()];
                         let was_managed = ws.is_managed(window);
-                        assert_eq!(ws.manage_fixed(window, layer), !was_managed);
+                        assert_eq!(ws.manage_fixed(window, kind), !was_managed);
+                        // Struts arbitrarios: solo los admite un panel.
+                        let strut = random_strut(next(4));
+                        let accepted = ws.set_strut(window, strut);
+                        assert!(!accepted || kind == FixedKind::Dock || was_managed);
+                        let insets = ws.insets(1280, 720);
+                        let work = crate::layout::work_area(SCREEN, insets).rect;
+                        assert!(work.width >= 1 && work.height >= 1);
                     } else {
                         let was = ws.fixed(window);
                         assert_eq!(ws.unmanage_fixed(window), was);

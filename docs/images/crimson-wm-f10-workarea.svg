@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1540" viewBox="0 0 1400 1540" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F10: struts y área de trabajo</title>
+  <desc id="desc">Diagrama técnico basado en el código de F10 (ADR 0012); no es una
+    captura. Muestra cómo se leen y validan _NET_WM_STRUT_PARTIAL y
+    _NET_WM_STRUT (tres estados y prioridad); las cuatro reservas de borde y
+    un tramo parcial; la combinación de varios paneles por el máximo de cada
+    borde; la pantalla física frente al área de trabajo y las ocho entradas
+    de _NET_WORKAREA; la pantalla completa frente al mosaico; el tratamiento
+    de valores inválidos y extremos, y lo aplazado.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif; font-size: 14px; fill: #1F2328; }
+      .title { font-size: 26px; font-weight: 700; }
+      .h { font-size: 17px; font-weight: 700; }
+      .h2 { font-size: 15px; font-weight: 700; }
+      .muted { fill: #57606A; }
+      .accent { fill: #8B0A1F; }
+      .small { font-size: 13px; }
+      .label { font-size: 13px; fill: #57606A; }
+      .mono { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 13px; }
+      .nlabel { font-size: 15px; font-weight: 700; }
+      .light { fill: #FFFFFF; }
+      .frame { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .deferred { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 6 5; }
+      .screen { fill: #F6F8FA; stroke: #1F2328; stroke-width: 1.5; }
+      .reserved { fill: #D0D7DE; stroke: none; }
+      .dock { fill: #1F2328; stroke: #1F2328; stroke-width: 1; }
+      .work { fill: none; stroke: #8B0A1F; stroke-width: 2.5; stroke-dasharray: 8 4; }
+      .tile-red { fill: #8B0A1F; stroke: #FFFFFF; stroke-width: 1.5; }
+      .tile-dark { fill: #57606A; stroke: #FFFFFF; stroke-width: 1.5; }
+      .n-white { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.2; }
+      .n-red { fill: #8B0A1F; stroke: #1F2328; stroke-width: 1.2; }
+      .n-dark { fill: #1F2328; stroke: #1F2328; stroke-width: 1.2; }
+      .n-bad { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 5 4; }
+      .flow { stroke: #1F2328; stroke-width: 1.8; fill: none; }
+      .flow-bad { stroke: #8C959F; stroke-width: 1.6; stroke-dasharray: 5 4; fill: none; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#1F2328"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#8C959F"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="1540" fill="#FFFFFF"/>
+  <text class="title" x="30" y="46">Crimson WM · F10: struts (_NET_WM_STRUT, _NET_WM_STRUT_PARTIAL) y _NET_WORKAREA</text>
+  <text class="muted" x="30" y="74">Diagrama técnico del código de F10 (ADR 0012). No es una captura: la captura real está en crimson-wm-f10-comparison.png.</text>
+
+  <!-- 1. Lectura -->
+  <rect class="frame" x="30" y="92" width="1340" height="250" rx="8"/>
+  <text class="h" x="48" y="122">1 · Lectura de un DOCK (solo los paneles reservan): ewmh::struts</text>
+  <rect class="n-white" x="50" y="146" width="300" height="80" rx="6"/>
+  <text class="nlabel" x="200" y="170" text-anchor="middle">_NET_WM_STRUT_PARTIAL</text>
+  <text class="small" x="200" y="192" text-anchor="middle">GetProperty(Any, 0, 12): CARDINAL,</text>
+  <text class="small" x="200" y="212" text-anchor="middle">formato 32, exactamente 12 valores</text>
+  <line class="flow" x1="350" y1="170" x2="420" y2="170" marker-end="url(#arrow)"/>
+  <text class="label" x="358" y="160">válida</text>
+  <rect class="n-red" x="422" y="146" width="260" height="50" rx="6"/>
+  <text class="nlabel light" x="552" y="176" text-anchor="middle">se usa; STRUT se ignora</text>
+  <line class="flow-bad" x1="350" y1="206" x2="420" y2="226" marker-end="url(#arrow-gray)"/>
+  <text class="label" x="268" y="246">mal formada</text>
+  <rect class="n-bad" x="422" y="208" width="260" height="56" rx="6"/>
+  <text class="nlabel" x="552" y="232" text-anchor="middle">defecto registrado</text>
+  <text class="small" x="552" y="252" text-anchor="middle">sin reserva; no recurre a STRUT</text>
+  <line class="flow" x1="200" y1="226" x2="200" y2="270" marker-end="url(#arrow)"/>
+  <text class="label" x="150" y="254">ausente</text>
+  <rect class="n-white" x="50" y="272" width="300" height="56" rx="6"/>
+  <text class="nlabel" x="200" y="296" text-anchor="middle">_NET_WM_STRUT (4 valores)</text>
+  <text class="small" x="200" y="316" text-anchor="middle">tramos = el borde completo</text>
+  <line class="flow" x1="350" y1="300" x2="420" y2="300" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="422" y="276" width="260" height="50" rx="6"/>
+  <text class="small" x="552" y="297" text-anchor="middle">válida: se usa · mal formada: defecto</text>
+  <text class="small" x="552" y="316" text-anchor="middle">ausente: el DOCK no reserva</text>
+  <text class="h2" x="720" y="160">Defectos (StrutError)</text>
+  <text class="small" x="720" y="184">· Type: no es CARDINAL de 32 bits (INTEGER, STRING…).</text>
+  <text class="small" x="720" y="206">· Length: no tiene exactamente 4 o 12 valores, o sobran (bytes_after).</text>
+  <text class="small" x="720" y="228">· Range: un borde con grosor cuyo tramo empieza después de acabar.</text>
+  <text class="h2" x="720" y="264">Ciclo de vida</text>
+  <text class="small" x="720" y="288">· Se leen al gestionar o adoptar el DOCK y en cada PropertyNotify de las dos.</text>
+  <text class="small" x="720" y="310">· Retirada o destrucción: su reserva desaparece. Un error X no es «ausente».</text>
+  <text class="label" x="720" y="332">Valores de 12: izq., der., arriba, abajo, y los tramos (inicio, fin incluido) de cada uno.</text>
+
+  <!-- 2. Reservas y tramos -->
+  <rect class="frame" x="30" y="358" width="660" height="400" rx="8"/>
+  <text class="h" x="48" y="388">2 · Las cuatro reservas y un tramo parcial</text>
+  <rect class="screen" x="70" y="410" width="512" height="288"/>
+  <rect class="reserved" x="70" y="410" width="512" height="16"/>
+  <rect class="dock" x="70" y="410" width="160" height="16"/>
+  <rect class="reserved" x="70" y="686" width="512" height="12"/>
+  <rect class="dock" x="200" y="692" width="250" height="6"/>
+  <rect class="reserved" x="70" y="426" width="40" height="260"/>
+  <rect class="dock" x="70" y="426" width="24" height="260"/>
+  <rect class="reserved" x="552" y="426" width="30" height="260"/>
+  <rect class="dock" x="566" y="426" width="16" height="260"/>
+  <rect class="work" x="110" y="426" width="442" height="260"/>
+  <text class="small light" x="80" y="422">arriba: 0–399</text>
+  <text class="small" x="250" y="422">franja reservada igualmente</text>
+  <text class="nlabel accent" x="331" y="560" text-anchor="middle">área de trabajo</text>
+  <text class="small" x="331" y="582" text-anchor="middle">(rectángulo: un único valor por escritorio)</text>
+  <text class="label" x="70" y="722">Pantalla 1280 × 720 a escala 0,4. Gris: franjas reservadas; negro: los paneles.</text>
+  <text class="small" x="70" y="744">Un tramo parcial reserva toda la franja; un tramo fuera de la raíz no reserva.</text>
+  <text class="small" x="596" y="440">arriba 40</text>
+  <text class="small" x="596" y="458">(0–399)</text>
+  <text class="small" x="596" y="490">izq. 100</text>
+  <text class="small" x="596" y="512">der. 75</text>
+  <text class="small" x="596" y="534">abajo 30</text>
+  <text class="label" x="596" y="574">Un panel</text>
+  <text class="label" x="596" y="592">puede ser</text>
+  <text class="label" x="596" y="610">menor que</text>
+  <text class="label" x="596" y="628">su reserva.</text>
+
+  <!-- 3. Combinación -->
+  <rect class="frame" x="710" y="358" width="660" height="400" rx="8"/>
+  <text class="h" x="728" y="388">3 · Varios paneles: máximo por borde, no suma</text>
+  <rect class="screen" x="740" y="410" width="256" height="144"/>
+  <rect class="dock" x="740" y="410" width="256" height="12"/>
+  <rect class="n-red" x="740" y="422" width="256" height="12"/>
+  <text class="small" x="1010" y="422">K1: arriba 30</text>
+  <text class="small accent" x="1010" y="442">K2: arriba 60 (apilado sobre K1)</text>
+  <text class="small" x="1010" y="470">Los struts se miden desde el borde de</text>
+  <text class="small" x="1010" y="490">la pantalla: la reserva es 60, no 90.</text>
+  <text class="small" x="740" y="584">· Borde a borde: Insets::max (izquierda, derecha, arriba y abajo).</text>
+  <text class="small" x="740" y="606">· Bordes distintos: cada uno restringe el suyo (izq. + arriba en una esquina).</text>
+  <text class="small" x="740" y="628">· No depende del orden de los paneles.</text>
+  <text class="small" x="740" y="650">· Al irse el más grueso, queda la reserva del otro (60 → 30).</text>
+  <text class="h2" x="740" y="690">Reservas extremas (layout::work_area)</text>
+  <text class="small" x="740" y="712">Cada eje conserva al menos 1 píxel: se limita primero el borde final</text>
+  <text class="small" x="740" y="734">(derecha, abajo) y después el inicial. Se registra la declarada y la efectiva.</text>
+
+  <!-- 4. Pantalla y área -->
+  <rect class="frame" x="30" y="774" width="1340" height="270" rx="8"/>
+  <text class="h" x="48" y="804">4 · Pantalla física frente a área de trabajo, y los ocho escritorios</text>
+  <rect class="screen" x="60" y="826" width="320" height="180"/>
+  <rect class="dock" x="60" y="826" width="320" height="10"/>
+  <rect class="tile-red" x="60" y="836" width="160" height="170"/>
+  <rect class="tile-dark" x="220" y="836" width="160" height="170"/>
+  <rect class="work" x="60" y="836" width="320" height="170"/>
+  <text class="small" x="60" y="1026">Mosaico: master-stack en el área (0 40 1280 680).</text>
+  <rect class="screen" x="420" y="826" width="320" height="180"/>
+  <rect class="tile-red" x="420" y="826" width="320" height="180"/>
+  <text class="nlabel light" x="580" y="920" text-anchor="middle">pantalla completa</text>
+  <text class="small" x="420" y="1026">Pantalla completa: la pantalla física (0 0 1280 720).</text>
+  <text class="h2" x="780" y="840">_NET_WORKAREA (CARDINAL[32])</text>
+  <text class="mono" x="780" y="864">x y ancho alto × 8 escritorios</text>
+  <text class="mono" x="780" y="886">0, 40, 1280, 680, 0, 40, 1280, 680, …</text>
+  <text class="small" x="780" y="914">· Igual en los ocho: los paneles están en todos.</text>
+  <text class="small" x="780" y="936">· Se publica tras identificarse y cuando cambia; se borra al salir.</text>
+  <text class="small" x="780" y="958">· Escritorio oculto: se recoloca al mostrarse.</text>
+  <text class="small" x="780" y="980">· Flotantes: nunca se mueven al cambiar el área.</text>
+  <text class="small" x="780" y="1002">· Diálogos: centrados dentro del área; respaldo 2/3 del área.</text>
+  <text class="small" x="780" y="1024">· Pantalla completa enfocada: por encima del panel (capas de F9).</text>
+
+  <!-- 5. Tabla -->
+  <rect class="frame" x="30" y="1060" width="900" height="460" rx="8"/>
+  <text class="h" x="48" y="1090">5 · Valores inválidos y extremos</text>
+  <text class="h2" x="50" y="1120">Caso</text>
+  <text class="h2" x="470" y="1120">Resultado</text>
+  <line class="flow" x1="48" y1="1130" x2="912" y2="1130"/>
+  <text class="small" x="50" y="1154">PARTIAL de 4 valores (con STRUT válida)</text><text class="small" x="470" y="1154">defecto Length; sin reserva (no usa STRUT)</text>
+  <text class="small" x="50" y="1180">PARTIAL de tipo INTEGER o formato 8</text><text class="small" x="470" y="1180">defecto Type; sin reserva</text>
+  <text class="small" x="50" y="1206">tramo invertido (inicio 900, fin 100)</text><text class="small" x="470" y="1206">defecto Range(Top); sin reserva</text>
+  <text class="small" x="50" y="1232">tramo fuera de la raíz (1280–1600)</text><text class="small" x="470" y="1232">ese borde no reserva; se registra</text>
+  <text class="small" x="50" y="1258">tramo que se sale (1000–4294967295)</text><text class="small" x="470" y="1258">cuenta: basta con que toque la raíz</text>
+  <text class="small" x="50" y="1284">grosor 4294967295 arriba</text><text class="small" x="470" y="1284">efectivo 720 → área 0 719 1280 1 (limitada)</text>
+  <text class="small" x="50" y="1310">arriba 400 + abajo 400 (720 px)</text><text class="small" x="470" y="1310">abajo limitado → área 0 400 1280 1</text>
+  <text class="small" x="50" y="1336">STRUT en NOTIFICATION, DESKTOP o normal</text><text class="small" x="470" y="1336">no se lee: solo los DOCK reservan</text>
+  <text class="small" x="50" y="1362">ventana desaparecida al leer (error X)</text><text class="small" x="470" y="1362">sin cambios; su retirada la olvida</text>
+  <text class="label" x="50" y="1400">Todo se calcula en u32 y se convierte con try_from: sin desbordamientos ni pánicos.</text>
+  <text class="label" x="50" y="1422">El mínimo de un píxel por eje es una decisión de Crimson; EWMH no fija ninguno.</text>
+  <text class="label" x="50" y="1444">EWMH: PARTIAL tiene prioridad y los tramos son coordenadas de la raíz.</text>
+  <text class="label" x="50" y="1466">Crimson: solo DOCK, máximo por borde, sin exigir que el strut coincida con la</text>
+  <text class="label" x="50" y="1488">geometría del panel, y sin recurrir a STRUT si PARTIAL es defectuosa.</text>
+
+  <!-- 6. Aplazado -->
+  <rect class="deferred" x="950" y="1060" width="420" height="460" rx="8"/>
+  <text class="h muted" x="968" y="1090">6 · Aplazado (no implementado)</text>
+  <text class="small muted" x="968" y="1120">· Varios monitores (RandR, Xinerama): una</text>
+  <text class="small muted" x="968" y="1140">  sola pantalla fija desde el arranque.</text>
+  <text class="small muted" x="968" y="1166">· Áreas no rectangulares: el hueco junto a</text>
+  <text class="small muted" x="968" y="1186">  un panel parcial no se aprovecha.</text>
+  <text class="small muted" x="968" y="1212">· Paneles que se ocultan solos y</text>
+  <text class="small muted" x="968" y="1232">  _NET_WM_STATE_ABOVE/BELOW.</text>
+  <text class="small muted" x="968" y="1258">· Márgenes (gaps) y bordes del mosaico.</text>
+  <text class="small muted" x="968" y="1284">· Reservas distintas por escritorio.</text>
+  <text class="small muted" x="968" y="1310">· Crimson Panel, IPC y configuración.</text>
+</svg>

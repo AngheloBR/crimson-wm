@@ -19,6 +19,9 @@
   conservan su posición aunque sean transitorias. Una ventana fija nunca es
   propietaria efectiva: un diálogo de un `DOCK` no se centra ni cambia de
   escritorio (ADR 0011).
+- **Actualización F10 (2026-10-14):** el centrado limita el diálogo al área
+  de trabajo, no a la pantalla, así que no nace debajo de un panel que
+  reserva espacio (ADR 0012).
 
 ![Captura real en Xvfb: dos ventanas en master-stack; un diálogo de la izquierda, centrado sobre ella y enfocado; y la principal a pantalla completa con su diálogo encima](../images/crimson-wm-f8-comparison.png)
 

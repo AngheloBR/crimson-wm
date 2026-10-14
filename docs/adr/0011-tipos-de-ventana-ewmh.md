@@ -5,6 +5,11 @@
   quedó parcial por el mismo motivo que A9 (ver «Resultados de las pruebas
   de aceptación de F9»).
 - **Fecha:** 2026-10-14
+- **Actualización F10 (2026-10-14):** `Disposition::Fixed` lleva un
+  `FixedKind` (`Dock`, `Notification` o `Desktop`) en lugar de `Layer`;
+  `FixedKind::layer` mantiene las mismas capas. Solo los `Dock` reservan
+  espacio con sus struts. *La limitación «el `DOCK` no reserva espacio»
+  está resuelta (ADR 0012); los demás pendientes siguen igual.*
 
 ![Captura real en Xvfb: con F8, una ventana DESKTOP tapa el mosaico; con F9, queda al fondo con el DOCK encima; y en el escritorio 2 el DOCK sigue visible y un menú conserva su posición](../images/crimson-wm-f9-comparison.png)
 

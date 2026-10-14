@@ -18,6 +18,10 @@
   estado inicial, y FULLSCREEN se retira de `_NET_WM_STATE`. La enfocada
   queda por encima del `DOCK`; sin foco, baja al fondo pero por encima de
   las `DESKTOP` (ADR 0011).
+- **Actualización F10 (2026-10-14):** la pantalla completa sigue ocupando
+  la pantalla física, aunque los paneles reserven espacio; al salir, una
+  ventana de mosaico vuelve a su hueco del área de trabajo, y el marco de
+  respaldo de una flotante se calcula sobre esa área (ADR 0012).
 
 ![Captura real en Xvfb: tres ventanas xlogo en master-stack; la segunda a pantalla completa con Mod4+f; y de nuevo la disposición original, idéntica píxel a píxel](../images/crimson-wm-f7-comparison.png)
 
