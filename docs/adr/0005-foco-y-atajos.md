@@ -9,6 +9,10 @@
 - **Actualización F4 (2026-10-13):** las seis combinaciones de aplicaciones
   ya no están reservadas: lanzan programas y sus atajos son opcionales
   (ADR 0006). Las secciones afectadas lo indican.
+- **Actualización F5 (2026-10-13):** el foco, el historial y la navegación
+  pasan a ser por escritorio virtual. Los `FocusIn` de ventanas de otro
+  escritorio se ignoran. Se añaden 17 atajos obligatorios de escritorio y
+  `WM_STATE` (ADR 0007).
 
 ## Contexto
 
@@ -289,6 +293,8 @@ ejercitan todos los casos de F3.
 - **Sin prevención del robo de foco:** toda ventana nueva que admite foco lo
   recibe, y los cambios hechos por los clientes se aceptan.
 - **EWMH parcial:** solo `_NET_ACTIVE_WINDOW`; tampoco hay `WM_STATE`.
+  *Desde F5 se publican `WM_STATE` y las propiedades de escritorio (ADR
+  0007), sin declarar soporte EWMH.*
 - **Clientes probados:** solo `xev` y `xclock`, en Xvfb; no se ha probado
   con aplicaciones reales ni con Xephyr.
 

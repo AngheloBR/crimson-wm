@@ -113,6 +113,29 @@ pub struct Clients {
 }
 
 impl Clients {
+    /// Comprueba los invariantes: ventanas sin repetir y un historial sin
+    /// repetir que solo contiene ventanas gestionadas que admiten foco.
+    #[cfg(test)]
+    pub fn assert_consistent(&self) {
+        for (i, c) in self.list.iter().enumerate() {
+            assert!(
+                self.list[i + 1..].iter().all(|o| o.window != c.window),
+                "ventana repetida {}",
+                c.window
+            );
+        }
+        for (i, &w) in self.history.iter().enumerate() {
+            assert!(
+                !self.history[i + 1..].contains(&w),
+                "historial repetido {w}"
+            );
+            assert!(
+                self.get(w).is_some_and(|c| c.focusable),
+                "historial con una ventana ajena o sin foco {w}"
+            );
+        }
+    }
+
     /// Añade la ventana al final. Devuelve `false`, sin cambiar nada, si ya
     /// estaba gestionada.
     pub fn manage(&mut self, window: Window, class: Class) -> bool {
@@ -133,17 +156,44 @@ impl Clients {
     /// `None` si no estaba gestionada (eventos duplicados o de ventanas
     /// ajenas).
     pub fn unmanage(&mut self, window: Window) -> Option<Removed> {
-        let index = self.list.iter().position(|c| c.window == window)?;
-        let was_focused = self.focused() == Some(window);
-        self.history.retain(|&w| w != window);
-        Some(Removed {
-            kind: self.list.remove(index).kind,
+        self.take(window).map(|(client, was_focused)| Removed {
+            kind: client.kind,
             was_focused,
         })
     }
 
+    /// Saca la ventana de la lista y del historial, para llevarla a otro
+    /// conjunto (ADR 0007). Indica también si era la enfocada.
+    pub fn take(&mut self, window: Window) -> Option<(Client, bool)> {
+        let index = self.list.iter().position(|c| c.window == window)?;
+        let was_focused = self.focused() == Some(window);
+        self.history.retain(|&w| w != window);
+        Some((self.list.remove(index), was_focused))
+    }
+
+    /// Añade al final una ventana sacada de otro conjunto con `take`,
+    /// conservando su clasificación y su última geometría, que sigue siendo
+    /// la real. Con `focused`, pasa al principio del historial. Devuelve
+    /// `false`, sin cambiar nada, si ya estaba gestionada.
+    pub fn adopt(&mut self, client: Client, focused: bool) -> bool {
+        if self.get(client.window).is_some() {
+            return false;
+        }
+        let window = client.window;
+        self.list.push(client);
+        if focused {
+            self.focus(window);
+        }
+        true
+    }
+
     pub fn get(&self, window: Window) -> Option<&Client> {
         self.list.iter().find(|c| c.window == window)
+    }
+
+    /// Todas las ventanas, en orden de llegada.
+    pub fn windows(&self) -> impl Iterator<Item = Window> + '_ {
+        self.list.iter().map(|c| c.window)
     }
 
     /// Ventanas del mosaico, en orden: la primera es la maestra.
@@ -528,6 +578,41 @@ mod tests {
         single.focus(1);
         assert!(!single.zoom(), "una sola ventana en mosaico");
         assert_eq!(clients.tiled().collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn sacar_y_adoptar() {
+        let mut origin = with(&[(1, TILED), (2, FLOATING), (3, TILED)]);
+        origin.set_geometry(3, rect(30));
+        for w in [1, 3] {
+            origin.focus(w);
+        }
+        let (client, was_focused) = origin.take(3).unwrap();
+        assert!(was_focused);
+        assert_eq!(origin.tiled().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(origin.history, vec![1]);
+        assert!(origin.take(3).is_none());
+
+        let mut target = with(&[(5, TILED)]);
+        target.focus(5);
+        assert!(target.adopt(client, true));
+        // Al final, con su clasificación y su geometría, y enfocada.
+        assert_eq!(target.tiled().collect::<Vec<_>>(), vec![5, 3]);
+        assert_eq!(target.get(3).and_then(|c| c.geometry), Some(rect(30)));
+        assert_eq!(target.history, vec![3, 5]);
+
+        // Una flotante sin foco conserva su tipo y no entra en el historial.
+        let (client, was_focused) = origin.take(2).unwrap();
+        assert!(!was_focused);
+        assert!(target.adopt(client, false));
+        assert_eq!(target.floating().collect::<Vec<_>>(), vec![2]);
+        assert_eq!(target.history, vec![3, 5]);
+        assert_eq!(target.windows().collect::<Vec<_>>(), vec![5, 3, 2]);
+
+        // No se duplica.
+        let (dup, _) = with(&[(5, TILED)]).take(5).unwrap();
+        assert!(!target.adopt(dup, true));
+        assert_eq!(target.windows().count(), 3);
     }
 
     #[test]

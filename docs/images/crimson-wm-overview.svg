@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="400" height="2118" viewBox="0 0 400 2118" role="img" aria-labelledby="title desc" xml:lang="es">
-  <title id="title">Crimson WM, fase F4: flujo implementado</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="2338" viewBox="0 0 400 2338" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F5: flujo implementado</title>
   <desc id="desc">Diagrama técnico basado en el código fuente; no es una captura
     ni una prueba de ejecución. El display :0 se rechaza siempre, lo que protege
     la sesión principal solo mientras esta use :0. En un entorno de prueba con
@@ -11,7 +11,10 @@
     los eventos: las ventanas normales se colocan en mosaico master-stack, las
     demás quedan flotantes, el foco se mueve con el teclado y los atajos de
     lanzamiento abren programas desde un hilo, sin shell, con un entorno sin
-    el token del sandbox. Cada paso indica sus códigos de salida. Aparte se muestra una selección de funciones pendientes.
+    el token del sandbox. Hay ocho escritorios virtuales: las ventanas de los
+    inactivos se desmapean, los desmapeos propios se reconocen por su número
+    de secuencia y el save-set hace que el servidor vuelva a mapearlas si el
+    WM termina. Cada paso indica sus códigos de salida. Aparte se muestra una selección de funciones pendientes.
     Las salvaguardas reducen accidentes, pero no son una frontera de
     seguridad.</desc>
   <defs>
@@ -38,9 +41,9 @@
     </marker>
   </defs>
 
-  <rect width="400" height="2118" fill="#FFFFFF"/>
+  <rect width="400" height="2338" fill="#FFFFFF"/>
 
-  <text class="h" x="20" y="30">Crimson WM · fase F4</text>
+  <text class="h" x="20" y="30">Crimson WM · fase F5</text>
   <text class="muted" x="20" y="52">Diagrama técnico del código actual;</text>
   <text class="muted" x="20" y="72">no es una captura ni prueba de ejecución.</text>
 
@@ -55,7 +58,7 @@
 
   <!-- Entorno de prueba -->
   <g>
-    <rect class="boundary" x="8" y="204" width="384" height="1626" rx="8"/>
+    <rect class="boundary" x="8" y="204" width="384" height="1826" rx="8"/>
     <text class="h accent" x="20" y="228">Entorno de prueba (Xvfb)</text>
   </g>
 
@@ -81,7 +84,7 @@
 
   <!-- Proceso crimson-wm -->
   <g>
-    <rect class="proc" x="20" y="476" width="360" height="1126" rx="4"/>
+    <rect class="proc" x="20" y="476" width="360" height="1326" rx="4"/>
     <text class="h" x="32" y="500">Proceso crimson-wm</text>
 
     <text class="h" x="32" y="528">1 · Argumentos</text>
@@ -139,55 +142,66 @@
     <text class="muted" x="32" y="1270">Sin tecla o captura rechazada: 14</text>
     <text class="muted" x="32" y="1290">Lanzamiento (Mod4+Return, d, e, b, n</text>
     <text class="muted" x="32" y="1310">y Print): opcionales; avisa y sigue.</text>
-    <line class="sep" x1="32" y1="1324" x2="368" y2="1324"/>
+    <text class="muted" x="32" y="1330">Escritorios (Mod4+1…8, Mod4+Shift+1…8</text>
+    <text class="muted" x="32" y="1350">y Mod4+Tab): obligatorios; fallo: 14.</text>
+    <line class="sep" x1="32" y1="1364" x2="368" y2="1364"/>
 
-    <text class="h" x="32" y="1348">9 · Adopción y bucle de eventos</text>
-    <text class="code" x="368" y="1348">0</text>
-    <text class="muted" x="32" y="1370">Al arrancar adopta las ventanas visibles.</text>
-    <text class="muted" x="32" y="1390">MapRequest: mosaico o flotante, y foco</text>
-    <text class="muted" x="32" y="1410">ConfigureRequest: denegada en mosaico</text>
-    <text class="muted" x="32" y="1430">Unmap/Destroy: reorganiza y reenfoca</text>
-    <text class="muted" x="32" y="1450">Mod4+j/k: foco; Mod4+Shift+Return: maestra</text>
-    <text class="muted" x="32" y="1470">FocusIn de un cliente: se sigue</text>
-    <text class="muted" x="32" y="1490">Mod4+Shift+Escape: termina con 0</text>
-    <text class="muted" x="32" y="1510">Lanzamiento: un hilo lanza y espera</text>
-    <text class="muted" x="32" y="1530">Error X: se registra y se ignora</text>
-    <line class="sep" x1="32" y1="1544" x2="368" y2="1544"/>
+    <text class="h" x="32" y="1388">9 · Adopción y bucle de eventos</text>
+    <text class="code" x="368" y="1388">0</text>
+    <text class="muted" x="32" y="1410">Al arrancar adopta las ventanas visibles.</text>
+    <text class="muted" x="32" y="1430">MapRequest: mosaico o flotante, y foco</text>
+    <text class="muted" x="32" y="1450">ConfigureRequest: denegada en mosaico</text>
+    <text class="muted" x="32" y="1470">Unmap/Destroy: reorganiza y reenfoca</text>
+    <text class="muted" x="32" y="1490">Mod4+j/k: foco; Mod4+Shift+Return: maestra</text>
+    <text class="muted" x="32" y="1510">Mod4+1…8: muestra ese escritorio y</text>
+    <text class="muted" x="32" y="1530">oculta el anterior (UnmapWindow)</text>
+    <text class="muted" x="32" y="1550">Mod4+Shift+1…8: mueve la enfocada</text>
+    <text class="muted" x="32" y="1570">Mod4+Tab: vuelve al escritorio anterior</text>
+    <text class="muted" x="32" y="1590">UnmapNotify del propio WM (ventana y</text>
+    <text class="muted" x="32" y="1610">n.º de secuencia exactos): se ignora</text>
+    <text class="muted" x="32" y="1630">FocusIn de un cliente: se sigue</text>
+    <text class="muted" x="32" y="1650">Mod4+Shift+Escape: termina con 0</text>
+    <text class="muted" x="32" y="1670">Lanzamiento: un hilo lanza y espera</text>
+    <text class="muted" x="32" y="1690">Error X: se registra y se ignora</text>
+    <text class="muted" x="32" y="1710">Save-set: si el WM termina, el servidor</text>
+    <text class="muted" x="32" y="1730">vuelve a mapear las ventanas ocultas.</text>
+    <line class="sep" x1="32" y1="1744" x2="368" y2="1744"/>
 
-    <text class="b" x="32" y="1568">Pasos 5 a 9: conexión perdida, 13.</text>
-    <text class="b" x="32" y="1588">Pasos 5 a 8 y adopción: error X, 14.</text>
+    <text class="b" x="32" y="1768">Pasos 5 a 9: conexión perdida, 13.</text>
+    <text class="b" x="32" y="1788">Pasos 5 a 8 y adopción: error X, 14.</text>
   </g>
 
-  <line class="flow" x1="52" y1="1602" x2="52" y2="1634" marker-end="url(#arrow-end)"/>
-  <text class="muted" x="68" y="1623">lanza (argv, sin shell)</text>
+  <line class="flow" x1="52" y1="1802" x2="52" y2="1834" marker-end="url(#arrow-end)"/>
+  <text class="muted" x="68" y="1823">lanza (argv, sin shell)</text>
 
   <!-- Procesos hijos -->
   <g>
-    <rect class="box" x="20" y="1636" width="360" height="180" rx="4"/>
-    <text class="h" x="32" y="1660">Programas lanzados (hijos)</text>
-    <text x="32" y="1682">Grupo de procesos propio; stdin vacío</text>
-    <text x="32" y="1702">(/dev/null); stdout y stderr del WM.</text>
-    <text x="32" y="1722">Sin CRIMSON_SANDBOX_TOKEN, WINDOWID</text>
-    <text x="32" y="1742">ni DESKTOP_STARTUP_ID; DISPLAY = :N.S.</text>
-    <text x="32" y="1762">Hasta 64 supervisados; un fallo no</text>
-    <text x="32" y="1782">termina el WM. En las pruebas, solo</text>
-    <text x="32" y="1802">programas falsos (PATH aislado).</text>
+    <rect class="box" x="20" y="1836" width="360" height="180" rx="4"/>
+    <text class="h" x="32" y="1860">Programas lanzados (hijos)</text>
+    <text x="32" y="1882">Grupo de procesos propio; stdin vacío</text>
+    <text x="32" y="1902">(/dev/null); stdout y stderr del WM.</text>
+    <text x="32" y="1922">Sin CRIMSON_SANDBOX_TOKEN, WINDOWID</text>
+    <text x="32" y="1942">ni DESKTOP_STARTUP_ID; DISPLAY = :N.S.</text>
+    <text x="32" y="1962">Hasta 64 supervisados; un fallo no</text>
+    <text x="32" y="1982">termina el WM. En las pruebas, solo</text>
+    <text x="32" y="2002">programas falsos (PATH aislado).</text>
   </g>
 
   <!-- Pendiente -->
   <g>
-    <rect class="pending" x="8" y="1846" width="384" height="184" rx="6"/>
-    <text class="h muted" x="20" y="1870">Pendiente (selección)</text>
-    <text class="muted" x="20" y="1892">No es la hoja de ruta completa; fases</text>
-    <text class="muted" x="20" y="1912">y detalle en los ADR 0002 a 0006.</text>
-    <text class="muted" x="20" y="1936">– Pruebas también con Xephyr</text>
-    <text class="muted" x="20" y="1956">– Gestión limpia de señales</text>
-    <text class="muted" x="20" y="1976">– Configuración (config.toml)</text>
-    <text class="muted" x="20" y="1996">– _NET_SUPPORTING_WM_CHECK propio</text>
-    <text class="muted" x="20" y="2016">– Extensiones RandR y XKB</text>
+    <rect class="pending" x="8" y="2046" width="384" height="204" rx="6"/>
+    <text class="h muted" x="20" y="2070">Pendiente (selección)</text>
+    <text class="muted" x="20" y="2092">No es la hoja de ruta completa; fases</text>
+    <text class="muted" x="20" y="2112">y detalle en los ADR 0002 a 0007.</text>
+    <text class="muted" x="20" y="2136">– Pruebas también con Xephyr</text>
+    <text class="muted" x="20" y="2156">– Gestión limpia de señales</text>
+    <text class="muted" x="20" y="2176">– Configuración (config.toml)</text>
+    <text class="muted" x="20" y="2196">– _NET_SUPPORTING_WM_CHECK propio</text>
+    <text class="muted" x="20" y="2216">– Extensiones RandR y XKB</text>
+    <text class="muted" x="20" y="2236">– Ventanas sticky (paneles)</text>
   </g>
 
-  <text class="b accent" x="20" y="2058">Las salvaguardas reducen accidentes;</text>
-  <text class="b accent" x="20" y="2078">no son una frontera de seguridad</text>
-  <text class="b accent" x="20" y="2098">(ADR 0003).</text>
+  <text class="b accent" x="20" y="2278">Las salvaguardas reducen accidentes;</text>
+  <text class="b accent" x="20" y="2298">no son una frontera de seguridad</text>
+  <text class="b accent" x="20" y="2318">(ADR 0003).</text>
 </svg>

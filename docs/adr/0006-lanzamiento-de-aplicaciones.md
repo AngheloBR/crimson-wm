@@ -5,6 +5,11 @@
   parcial por el mismo motivo que A9 (ver «Resultados de las pruebas de
   aceptación de F4»).
 - **Fecha:** 2026-10-13
+- **Actualización F5 (2026-10-13):** `Repeats` también filtra la
+  repetición automática de los atajos de escritorio que no son idempotentes
+  (`Mod4+Shift+n` y `Mod4+Tab`), sin el intervalo de 300 ms (ADR 0007). Los
+  programas lanzados no se ven afectados por los cambios de escritorio, y su
+  ventana aparece en el escritorio activo al mapearse.
 
 ## Contexto
 

@@ -5,6 +5,11 @@
   A10–A20 pasaron en Xvfb; A21 quedó parcial por el mismo motivo que A9
   (ver «Resultados de las pruebas de aceptación de F2»).
 - **Fecha:** 2026-10-13
+- **Actualización F5 (2026-10-13):** el mosaico pasa a ser por escritorio:
+  cada uno de los ocho escritorios virtuales tiene su propio `Clients`, y
+  el WM ya desmapea ventanas para ocultarlas, distinguiendo sus desmapeos de
+  las retiradas de los clientes (ADR 0007). Las secciones afectadas lo
+  indican.
 
 ## Contexto
 
@@ -85,7 +90,7 @@ macro `atom_manager!` de x11rb, disponible sin features.
   el `DestroyNotify` de una misma ventana, o los eventos de ventanas
   ajenas, no alteran el estado. F2 nunca desmapea ventanas por sí mismo, así
   que no necesita distinguir desmapeos propios (lo necesitarán los
-  escritorios virtuales).
+  escritorios virtuales). *Resuelto en F5 (ADR 0007).*
 - **Geometría guardada:** solo se envía `ConfigureWindow` a las ventanas
   cuya geometría cambia.
 - **Adopción:** al arrancar se consultan las hijas de la raíz
@@ -193,7 +198,8 @@ resultados. Los identificadores de las comprobaciones no cambian.
   un servidor sin WM. *Resuelto en F3 (ADR 0005).*
 - **Sin `WM_STATE` ni EWMH propios** (`_NET_SUPPORTING_WM_CHECK`,
   `_NET_CLIENT_LIST`…): algunas aplicaciones y herramientas los esperan.
-  Desde F3 solo se publica `_NET_ACTIVE_WINDOW` (ADR 0005).
+  Desde F3 solo se publica `_NET_ACTIVE_WINDOW` (ADR 0005); desde F5,
+  también `WM_STATE` y las propiedades de escritorio del ADR 0007.
 - **Paneles y escritorio:** `DOCK` y `DESKTOP` quedan flotantes; no se
   reserva espacio para paneles (struts) ni se envía el escritorio al fondo.
 - **Pantalla completa** (`_NET_WM_STATE_FULLSCREEN`): no se atiende; esas
@@ -221,7 +227,7 @@ resultados. Los identificadores de las comprobaciones no cambian.
 - `ConfigureRequest` deja de aplicarse tal cual a las ventanas en mosaico:
   la comprobación `A7-extra-configure` de F1 se redefinió (ADR 0003).
 - Añadir escritorios virtuales exigirá distinguir los desmapeos propios de
-  los del cliente; añadir otros diseños, una función por diseño con la
+  los del cliente (hecho en F5, ADR 0007); añadir otros diseños, una función por diseño con la
   misma firma que `master_stack`.
 - Las nuevas órdenes del arnés (`xlogo`, de x11-apps, y `xev`, de
   x11-utils) figuran en la cabecera de `tests/acceptance/f2/run.sh` y en

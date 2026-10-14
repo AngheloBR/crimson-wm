@@ -1,7 +1,7 @@
-//! Atajos de teclado (ADR 0005 y 0006): una tabla fija capturada en la
-//! raíz, también con Bloq Mayús y Bloq Num activos. Incluye el atajo
-//! provisional de salida `Mod4+Shift+Escape` (ADR 0003) y los de
-//! lanzamiento de aplicaciones.
+//! Atajos de teclado (ADR 0005, 0006 y 0007): una tabla fija capturada en
+//! la raíz, también con Bloq Mayús y Bloq Num activos. Incluye el atajo
+//! provisional de salida `Mod4+Shift+Escape` (ADR 0003), los de lanzamiento
+//! de aplicaciones y los de escritorios.
 
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
@@ -23,6 +23,9 @@ const XK_J: Keysym = 0x006a;
 const XK_K: Keysym = 0x006b;
 const XK_N: Keysym = 0x006e;
 const XK_NUM_LOCK: Keysym = 0xff7f;
+const XK_TAB: Keysym = 0xff09;
+/// Dígitos `1` a `8`, en orden.
+const XK_DIGITS: [Keysym; 8] = [0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38];
 
 // Máscaras de modificadores del protocolo X11 (`ModMask`).
 const SHIFT: u16 = 1 << 0;
@@ -47,6 +50,12 @@ pub enum Action {
     Zoom,
     /// Lanza el programa de ese índice de `spawn::PROGRAMS`.
     Launch(usize),
+    /// Activa el escritorio de ese índice (0 a 7).
+    View(usize),
+    /// Lleva la ventana enfocada al escritorio de ese índice.
+    MoveTo(usize),
+    /// Vuelve al escritorio anterior.
+    ViewPrevious,
 }
 
 struct Binding {
@@ -63,6 +72,23 @@ impl Binding {
     /// opcionales: se avisa y el WM sigue sin ellos.
     fn required(&self) -> bool {
         !matches!(self.action, Action::Launch(_))
+    }
+}
+
+/// `Mod4+n` activa el escritorio n y `Mod4+Shift+n` lleva allí la ventana
+/// enfocada. Con Shift se captura el mismo keysym del dígito: los atajos se
+/// reconocen por código de tecla y modificadores, no por el carácter que
+/// produce la tecla con Shift (`exclam`, `at`…).
+const fn desk(index: usize, shift: bool, name: &'static str) -> Binding {
+    Binding {
+        modifiers: if shift { MOD4 | SHIFT } else { MOD4 },
+        keysym: XK_DIGITS[index],
+        name,
+        action: if shift {
+            Action::MoveTo(index)
+        } else {
+            Action::View(index)
+        },
     }
 }
 
@@ -126,6 +152,28 @@ const BINDINGS: &[Binding] = &[
         keysym: XK_PRINT,
         name: "Print",
         action: Action::Launch(spawn::SCREENSHOT),
+    },
+    desk(0, false, "Mod4+1"),
+    desk(1, false, "Mod4+2"),
+    desk(2, false, "Mod4+3"),
+    desk(3, false, "Mod4+4"),
+    desk(4, false, "Mod4+5"),
+    desk(5, false, "Mod4+6"),
+    desk(6, false, "Mod4+7"),
+    desk(7, false, "Mod4+8"),
+    desk(0, true, "Mod4+Shift+1"),
+    desk(1, true, "Mod4+Shift+2"),
+    desk(2, true, "Mod4+Shift+3"),
+    desk(3, true, "Mod4+Shift+4"),
+    desk(4, true, "Mod4+Shift+5"),
+    desk(5, true, "Mod4+Shift+6"),
+    desk(6, true, "Mod4+Shift+7"),
+    desk(7, true, "Mod4+Shift+8"),
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_TAB,
+        name: "Mod4+Tab",
+        action: Action::ViewPrevious,
     },
 ];
 
@@ -260,13 +308,17 @@ fn grab_key(
 /// Intervalo mínimo entre dos lanzamientos del mismo atajo, en ms.
 const REPEAT_INTERVAL: Timestamp = 300;
 
-/// Filtro de repetición de los atajos de lanzamiento. Ignora:
+/// Filtro de repetición de los atajos. Para los de lanzamiento ignora:
 /// - la repetición automática del servidor: sin la extensión XKB, cada
 ///   repetición llega como un KeyRelease y un KeyPress de la misma tecla con
 ///   la misma marca de tiempo;
 /// - las pulsaciones de un atajo a menos de `REPEAT_INTERVAL` de la
 ///   anterior, aceptada o no, según las marcas de tiempo del servidor (que
 ///   dan la vuelta cada 2^32 ms).
+///
+/// Los atajos de escritorio que no son idempotentes (mover la ventana y
+/// volver al anterior) solo ignoran la repetición automática: mantener
+/// `Mod4+Shift+n` no debe llevarse una ventana tras otra.
 #[derive(Default)]
 pub struct Repeats {
     /// Última liberación de una tecla capturada: código y marca de tiempo.
@@ -287,8 +339,17 @@ impl Repeats {
         self.accept_at(program, event.detail, event.time)
     }
 
+    /// La pulsación es una repetición automática del servidor.
+    pub fn autorepeat(&self, event: &KeyPressEvent) -> bool {
+        self.autorepeat_at(event.detail, event.time)
+    }
+
+    fn autorepeat_at(&self, keycode: Keycode, time: Timestamp) -> bool {
+        self.release == Some((keycode, time))
+    }
+
     fn accept_at(&mut self, program: usize, keycode: Keycode, time: Timestamp) -> bool {
-        let autorepeat = self.release == Some((keycode, time));
+        let autorepeat = self.autorepeat_at(keycode, time);
         let previous = match self.presses.iter_mut().find(|(p, _)| *p == program) {
             Some((_, last)) => Some(std::mem::replace(last, time)),
             None => {
@@ -391,24 +452,27 @@ mod tests {
 
     /// Tabla como la que produce `grab_bindings` con el mapa por defecto de
     /// Xvfb: Escape = 9, Return = 36, j = 44, k = 45, d = 40, e = 26,
-    /// b = 56, n = 57 y Print = 107 y 218.
+    /// b = 56, n = 57, Print = 107 y 218, 1 a 8 = 10 a 17 y Tab = 23.
     fn bindings(num_lock: u16) -> Bindings {
-        Bindings {
-            keys: vec![
-                (9, MOD4 | SHIFT, Action::Exit),
-                (44, MOD4, Action::FocusNext),
-                (45, MOD4, Action::FocusPrev),
-                (36, MOD4 | SHIFT, Action::Zoom),
-                (36, MOD4, Action::Launch(spawn::TERMINAL)),
-                (40, MOD4, Action::Launch(spawn::LAUNCHER)),
-                (26, MOD4, Action::Launch(spawn::FILES)),
-                (56, MOD4, Action::Launch(spawn::BROWSER)),
-                (57, MOD4, Action::Launch(spawn::EDITOR)),
-                (107, 0, Action::Launch(spawn::SCREENSHOT)),
-                (218, 0, Action::Launch(spawn::SCREENSHOT)),
-            ],
-            num_lock,
+        let mut keys = vec![
+            (9, MOD4 | SHIFT, Action::Exit),
+            (44, MOD4, Action::FocusNext),
+            (45, MOD4, Action::FocusPrev),
+            (36, MOD4 | SHIFT, Action::Zoom),
+            (36, MOD4, Action::Launch(spawn::TERMINAL)),
+            (40, MOD4, Action::Launch(spawn::LAUNCHER)),
+            (26, MOD4, Action::Launch(spawn::FILES)),
+            (56, MOD4, Action::Launch(spawn::BROWSER)),
+            (57, MOD4, Action::Launch(spawn::EDITOR)),
+            (107, 0, Action::Launch(spawn::SCREENSHOT)),
+            (218, 0, Action::Launch(spawn::SCREENSHOT)),
+            (23, MOD4, Action::ViewPrevious),
+        ];
+        for (index, keycode) in (10..=17).enumerate() {
+            keys.push((keycode, MOD4, Action::View(index)));
+            keys.push((keycode, MOD4 | SHIFT, Action::MoveTo(index)));
         }
+        Bindings { keys, num_lock }
     }
 
     #[test]
@@ -480,7 +544,7 @@ mod tests {
             b.action_for(9, m4 | KeyButMask::SHIFT | KeyButMask::CONTROL),
             None
         );
-        assert_eq!(b.action_for(10, m4), None);
+        assert_eq!(b.action_for(18, m4), None);
         // Los atajos de lanzamiento tampoco admiten modificadores de más.
         assert_eq!(b.action_for(40, KeyButMask::from(0u16)), None);
         assert_eq!(b.action_for(40, m4 | KeyButMask::SHIFT), None);
@@ -559,6 +623,85 @@ mod tests {
         {
             assert!(binding.required(), "{}", binding.name);
         }
+    }
+
+    // U13: escritorios.
+
+    #[test]
+    fn reconoce_los_atajos_de_escritorio() {
+        let b = bindings(NUM_LOCK_MOD2);
+        let m4 = KeyButMask::MOD4;
+        for (index, keycode) in (10..=17).enumerate() {
+            assert_eq!(b.action_for(keycode, m4), Some(Action::View(index)));
+            // Con Shift, la misma tecla (que produce `exclam`, `at`…).
+            assert_eq!(
+                b.action_for(keycode, m4 | KeyButMask::SHIFT),
+                Some(Action::MoveTo(index))
+            );
+            for extra in [KeyButMask::LOCK, KeyButMask::MOD2] {
+                assert_eq!(b.action_for(keycode, m4 | extra), Some(Action::View(index)));
+                assert_eq!(
+                    b.action_for(keycode, m4 | KeyButMask::SHIFT | extra),
+                    Some(Action::MoveTo(index))
+                );
+            }
+            // Sin Mod4, o con otro modificador, la tecla llega a la ventana.
+            assert_eq!(b.action_for(keycode, KeyButMask::from(0u16)), None);
+            assert_eq!(b.action_for(keycode, KeyButMask::SHIFT), None);
+            assert_eq!(b.action_for(keycode, m4 | KeyButMask::CONTROL), None);
+        }
+        assert_eq!(b.action_for(23, m4), Some(Action::ViewPrevious));
+        assert_eq!(
+            b.action_for(23, m4 | KeyButMask::LOCK),
+            Some(Action::ViewPrevious)
+        );
+        // Ni Alt+Tab ni Mod4+Shift+Tab.
+        assert_eq!(b.action_for(23, KeyButMask::MOD1), None);
+        assert_eq!(b.action_for(23, m4 | KeyButMask::SHIFT), None);
+        assert_eq!(b.action_for(18, m4), None, "9 no es un escritorio");
+    }
+
+    #[test]
+    fn atajos_de_escritorio() {
+        let desks: Vec<_> = BINDINGS
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b.action,
+                    Action::View(_) | Action::MoveTo(_) | Action::ViewPrevious
+                )
+            })
+            .collect();
+        assert_eq!(desks.len(), 17);
+        for (index, keysym) in XK_DIGITS.iter().enumerate() {
+            let digit = index + 1;
+            let find = |action| desks.iter().find(|b| b.action == action).unwrap();
+            let view = find(Action::View(index));
+            assert_eq!((view.modifiers, view.keysym), (MOD4, *keysym));
+            assert_eq!(view.name, format!("Mod4+{digit}"));
+            let move_to = find(Action::MoveTo(index));
+            assert_eq!((move_to.modifiers, move_to.keysym), (MOD4 | SHIFT, *keysym));
+            assert_eq!(move_to.name, format!("Mod4+Shift+{digit}"));
+            assert_eq!(char::from_u32(*keysym), char::from_digit(digit as u32, 10));
+        }
+        let previous: Vec<_> = desks
+            .iter()
+            .filter(|b| b.action == Action::ViewPrevious)
+            .collect();
+        assert_eq!(previous.len(), 1);
+        assert_eq!((previous[0].modifiers, previous[0].keysym), (MOD4, XK_TAB));
+        // Todos son obligatorios (código 14 si no se pueden capturar).
+        assert!(desks.iter().all(|b| b.required()));
+    }
+
+    #[test]
+    fn repeticion_automatica_de_los_atajos_de_escritorio() {
+        let mut r = Repeats::default();
+        assert!(!r.autorepeat_at(12, 1_000));
+        r.release = Some((12, 1_660));
+        assert!(r.autorepeat_at(12, 1_660));
+        assert!(!r.autorepeat_at(12, 1_700), "otra pulsación");
+        assert!(!r.autorepeat_at(23, 1_660), "otra tecla");
     }
 
     #[test]

@@ -1,6 +1,7 @@
-//! Crimson WM, fase F4: mosaico master-stack (ADR 0004), foco por teclado
-//! (ADR 0005) y lanzamiento de aplicaciones (ADR 0006). Solo arranca en un
-//! servidor X de prueba que supere las salvaguardas del ADR 0003.
+//! Crimson WM, fase F5: mosaico master-stack (ADR 0004), foco por teclado
+//! (ADR 0005), lanzamiento de aplicaciones (ADR 0006) y escritorios virtuales
+//! (ADR 0007). Solo arranca en un servidor X de prueba que supere las
+//! salvaguardas del ADR 0003.
 
 mod cli;
 mod clients;
@@ -12,6 +13,7 @@ mod layout;
 mod safeguards;
 mod spawn;
 mod wm;
+mod workspaces;
 
 use std::io::Write as _;
 use std::process::ExitCode;
