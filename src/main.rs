@@ -1,7 +1,8 @@
-//! Crimson WM, fase F6: mosaico master-stack (ADR 0004), foco por teclado
+//! Crimson WM, fase F7: mosaico master-stack (ADR 0004), foco por teclado
 //! (ADR 0005), lanzamiento de aplicaciones (ADR 0006), escritorios virtuales
-//! (ADR 0007) y compatibilidad ICCCM/EWMH (ADR 0008). Solo arranca en un
-//! servidor X de prueba que supere las salvaguardas del ADR 0003.
+//! (ADR 0007), compatibilidad ICCCM/EWMH (ADR 0008) y pantalla completa (ADR
+//! 0009). Solo arranca en un servidor X de prueba que supere las
+//! salvaguardas del ADR 0003.
 
 mod cli;
 mod clients;

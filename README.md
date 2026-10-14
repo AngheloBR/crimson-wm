@@ -3,31 +3,33 @@
 Gestor de ventanas para X11, escrito en Rust y dirigido inicialmente a
 Debian 13 (Trixie), orientado a la gestión de ventanas en mosaico. Por ahora
 es un prototipo con un único diseño, master-stack, ocho escritorios
-virtuales y compatibilidad parcial con ICCCM y EWMH (ver «Estado»).
+virtuales, pantalla completa y compatibilidad parcial con ICCCM y EWMH (ver
+«Estado»).
 
 ## Estado
 
-Fase F6: compatibilidad ICCCM/EWMH (identificación del WM, cierre de
-ventanas y peticiones de paneles y herramientas), sobre los escritorios
-virtuales, el lanzamiento de aplicaciones, el foco por teclado y el mosaico
-master-stack. **Todavía no es un gestor de ventanas utilizable:** solo
-arranca en un servidor X de prueba que supere las salvaguardas del ADR 0003,
-coloca las ventanas normales en mosaico, deja flotantes los diálogos,
-gestiona el foco con el teclado, reparte las ventanas en ocho escritorios,
-cierra ventanas, lanza seis programas fijos y termina con el atajo
-provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones, pantalla
-completa, varios monitores ni configuración.
+Fase F7: pantalla completa (`Mod4+f` y `_NET_WM_STATE_FULLSCREEN`), sobre
+la compatibilidad ICCCM/EWMH, los escritorios virtuales, el lanzamiento de
+aplicaciones, el foco por teclado y el mosaico master-stack. **Todavía no es
+un gestor de ventanas utilizable:** solo arranca en un servidor X de prueba
+que supere las salvaguardas del ADR 0003, coloca las ventanas normales en
+mosaico, deja flotantes los diálogos, gestiona el foco con el teclado,
+reparte las ventanas en ocho escritorios, pone una ventana a pantalla
+completa, cierra ventanas, lanza seis programas fijos y termina con el
+atajo provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones,
+paneles, varios monitores ni configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
-(2026-10-11). Últimos resultados registrados, todos del 2026-10-13 en Xvfb
-sobre el binario de depuración de F6 (detalles y limitaciones en los ADR
-0003 a 0008):
+(2026-10-11). Últimos resultados registrados, todos del 2026-10-14 en Xvfb
+sobre el binario de depuración de F7 (detalles y limitaciones en los ADR
+0003 a 0009):
 
-- Pruebas unitarias U1–U16 (94 pruebas de `cargo test`): pasaron.
-- Aceptación de F6: A53–A62 y el caso A64 pasaron; las comprobaciones de
-  sesión de **A64 quedaron parciales**, porque la consulta de la raíz de
-  `:0` se omite deliberadamente. Solo se lanzaron programas falsos, nunca
-  las aplicaciones reales.
+- Pruebas unitarias U1–U18 (105 pruebas de `cargo test`): pasaron.
+- Aceptación de F7: A63 y A65–A74 pasaron y **A75 quedó parcial**, porque
+  la consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
+  programas falsos, nunca las aplicaciones reales.
+- Regresión de F6: A53–A62 y el caso A64 pasaron; las comprobaciones de
+  sesión de **A64 quedaron parciales** por el mismo motivo.
 - Regresión de F5: A41–A51 pasaron y **A52 quedó parcial** por el mismo
   motivo.
 - Regresión de F4: A33–A39 pasaron y **A40 quedó parcial** por el mismo
@@ -80,6 +82,7 @@ raíz del servidor: `xeyes` usa una ventana con forma.*
 | `Mod4+Shift+Escape` | Termina el WM (atajo provisional) |
 | `Mod4+w` | Pide a la ventana enfocada que se cierre (`WM_DELETE_WINDOW`; desde F6) |
 | `Mod4+Shift+w` | Cierra a la fuerza el cliente de la ventana enfocada: **todas** sus ventanas (`KillClient`; desde F6) |
+| `Mod4+f` | Alterna la pantalla completa de la ventana enfocada (desde F7) |
 
 Combinaciones reservadas para fases posteriores, **todavía sin implementar
 ni capturar**: `Mod4+h` y `Mod4+l` (foco a izquierda y derecha). Las de
@@ -190,13 +193,50 @@ Fuente editable: `docs/images/crimson-wm-f6-icccm-ewmh.svg`.*
 
 Detalles, casos límite y limitaciones en el ADR 0008.
 
+## Pantalla completa (F7)
+
+![Captura real en Xvfb: tres ventanas xlogo en master-stack; la segunda a pantalla completa con Mod4+f; y de nuevo la disposición original](docs/images/crimson-wm-f7-comparison.png)
+
+*Captura auténtica de Crimson WM en un Xvfb aislado de 1280 × 720 (prueba
+A74): volcados de `xwd -root` sin retoques. Los paneles 1 y 3 son idénticos
+píxel a píxel.*
+
+- `Mod4+f` alterna la pantalla completa de la ventana enfocada. Las
+  aplicaciones pueden pedirla con `_NET_WM_STATE` (añadir, quitar o
+  alternar), también antes de mostrar su ventana.
+- **En mosaico:** la ventana sale temporalmente del master-stack, y las
+  demás se reparten el espacio detrás. Al salir recupera su hueco y el
+  orden no cambia.
+- **Flotante:** al salir recupera exactamente su posición, tamaño y borde.
+- **Pila:** la ventana sube cuando tiene el foco. Si se enfoca otra de su
+  escritorio (por ejemplo, un diálogo), baja para que esa se vea.
+- **Escritorios:**
+  - como mucho una ventana a pantalla completa por escritorio: la última
+    petición gana;
+  - el estado viaja con la ventana al moverla;
+  - una petición para una ventana de otro escritorio no cambia el
+    escritorio activo ni el foco.
+- **Salida:**
+  - al salir normalmente, todas las ventanas recuperan su geometría;
+  - tras `SIGTERM` o `SIGKILL` no hay restauración, y una ventana flotante
+    puede volver con un tamaño de respaldo (centrada, 2/3 de la pantalla).
+- El WM solo gestiona el estado `FULLSCREEN`: conserva, sin
+  interpretarlos, los demás estados que ponga la aplicación.
+
+![Diagrama de F7: estados normal y pantalla completa, qué se guarda y qué se calcula, pila y foco, peticiones _NET_WM_STATE, salida y recuperación](docs/images/crimson-wm-f7-fullscreen.png)
+
+*Diagrama técnico elaborado a partir del código de F7; no es una captura.
+Fuente editable: `docs/images/crimson-wm-f7-fullscreen.svg`.*
+
+Detalles, casos límite y limitaciones en el ADR 0009.
+
 ## Arranque y eventos
 
 ![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, se identifica (WM_S0 y EWMH), adopta las ventanas visibles, atiende los eventos de mosaico, foco, escritorios y cierre y lanza programas sin shell; :0 se rechaza](docs/images/crimson-wm-overview.svg)
 
 *Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 a
-0008. No es una captura ni demuestra una ejecución; los resultados de las
-pruebas están en los ADR 0003 a 0008.*
+0009. No es una captura ni demuestra una ejecución; los resultados de las
+pruebas están en los ADR 0003 a 0009.*
 
 ## Principios
 
@@ -222,7 +262,8 @@ pruebas están en los ADR 0003 a 0008.*
 | `util-linux` | `mcookie`, `unshare` | Valores aleatorios para cookies y marca de sandbox; aislamiento sin privilegios de A1, A2 y A3a | Instalado |
 | `bsdextrautils` | `column` | Tabla de resultados del arnés de aceptación | Instalado |
 | `x11-utils` | `xprop`, `xwininfo`, `xmessage`, `xlsatoms`, `xev` | Clientes y comprobaciones de prueba | Instalado |
-| `x11-apps` | `xlogo`, `xclock` | Clientes de prueba de F2 (A19) y F3 (A28) | Instalado |
+| `x11-apps` | `xlogo`, `xclock`, `xwd` | Clientes de prueba de F2 (A19), F3 (A28) y F7 (A74), y la captura real de A74 | Instalado |
+| `imagemagick` | `magick` | Conversión y composición de la captura de A74, y sus validaciones de píxeles | Instalado |
 | `xdotool` | `xdotool` | Simulación de teclado en pruebas | Instalado |
 | `procps` | `pgrep`, `ps` | Comprobación de procesos (`ps`: hijos del WM en F4) | Instalado |
 | `diffutils` | `cmp` | Verificación de los programas falsos de F4 | Instalado |
@@ -236,8 +277,8 @@ pruebas están en los ADR 0003 a 0008.*
 | Herramienta | Uso | Estado |
 |---|---|---|
 | `cargo-deny`, `cargo-audit` | Licencias y avisos de seguridad de dependencias | Aplazadas hasta que el árbol de dependencias lo justifique |
-| `imagemagick` (`magick`), `x11-apps` (`xwd`, `xeyes`) | Solo documentación: generar el PNG de la ilustración desde su SVG y la captura de prueba en Xvfb. Ningún script del arnés los usa | Instalados |
-| `librsvg2-2`, `libcairo2`, `python3` | Solo documentación: desde F6, renderizar fielmente los SVG a PNG (librsvg y cairo llamados con `ctypes`; ver ADR 0008). El renderizador interno de ImageMagick no dibuja los trazos | Instalados |
+| `x11-apps` (`xeyes`) | Solo documentación: la captura de prueba de F2 | Instalado |
+| `librsvg2-2`, `libcairo2`, `python3` | Solo documentación: renderizar fielmente los SVG a PNG con `tools/render-svg.py` (librsvg y cairo llamados con `ctypes`; ADR 0009). El renderizador interno de ImageMagick no dibuja los trazos | Instalados |
 | `ss` (`iproute2`) | Posible comprobación adicional de a qué servidor se conecta el WM (`ss -xp`, ver ADR 0003). Ningún script del arnés actual la usa | Instalada; pendiente de validar |
 
 No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
@@ -247,7 +288,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U16)
+### Unitarias (U1–U18)
 
 ```sh
 cargo test --locked
@@ -378,6 +419,36 @@ tests/acceptance/f6/run.sh [BINARIO]
 - Los resultados se guardan en un directorio nuevo `crimson-f6.XXXXXX`
   dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
 
+### Aceptación de F7 (A63 y A65–A75)
+
+```sh
+cargo build --locked --examples
+tests/acceptance/f7/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas, código de salida, aislamiento y
+  programas falsos que los arneses de F5 y F6.
+- `test-client` también crea ventanas que piden la pantalla completa antes
+  de mostrarse, diálogos con un marco conocido, y registra los
+  `ConfigureNotify` recibidos.
+- A73 envía `SIGTERM` solo al proceso `crimson-wm` hijo del `timeout` del
+  arnés.
+- A74 hace la captura real (`xwd -root`) y compone y valida la comparación.
+  La imagen del repositorio procede de esa prueba.
+- A75 equivale a A9 y queda siempre parcial.
+- Los resultados, con las capturas sin componer, se guardan en un
+  directorio nuevo `crimson-f7.XXXXXX` dentro de `$TMPDIR` (o de `/tmp`),
+  que el arnés no borra.
+
+### Imágenes de los diagramas
+
+```sh
+tools/render-svg.py docs/images/crimson-wm-f7-fullscreen.svg docs/images/crimson-wm-f7-fullscreen.png --scale 2
+```
+
+Renderiza un SVG a PNG con las bibliotecas del sistema (librsvg y cairo),
+sin instalar nada ni usar la red.
+
 Desde F4, todos los arneses arrancan el WM con `env -i` y un entorno
 mínimo: `DISPLAY` y `XAUTHORITY` del Xvfb de la prueba, el token, y `PATH`,
 `HOME`, `XDG_*` y `DBUS_SESSION_BUS_ADDRESS` apuntando a directorios
@@ -418,6 +489,7 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
 - `docs/adr/0007-escritorios-virtuales.md`: escritorios virtuales de F5.
 - `docs/adr/0008-compatibilidad-icccm-ewmh.md`: compatibilidad ICCCM/EWMH
   de F6.
+- `docs/adr/0009-pantalla-completa.md`: pantalla completa de F7.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior

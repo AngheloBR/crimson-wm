@@ -104,7 +104,7 @@ validación y la conexión no interpreten `DISPLAY` de forma distinta:
   pantallas que lista la respuesta de conexión
   (`x11rb-0.14.0/src/rust_connection/mod.rs:245-248`) y, si no existe,
   devuelve `InvalidScreen`; `src/connect.rs` (líneas 53-56) lo convierte en
-  el código 14. `src/main.rs` (líneas 63-66) repite la comprobación, con el
+  el código 14. `src/main.rs` (líneas 64-67) repite la comprobación, con el
   mismo código. Ninguna prueba de aceptación ha usado todavía una pantalla
   inexistente.
 - El parser acepta ceros a la izquierda y el signo `+` (`:05` y `:+5` dan
@@ -132,7 +132,7 @@ cookie registrada no se puede usar, y nunca se recurrirá a `-ac`.
 La propiedad `_CRIMSON_SANDBOX` de la ventana raíz debe coincidir con la
 variable de entorno `CRIMSON_SANDBOX_TOKEN`. Solo los scripts de prueba
 crean esa marca, con un valor aleatorio generado con `mcookie`. La variable
-se comprueba antes de abrir la conexión (`src/main.rs`, línea 59).
+se comprueba antes de abrir la conexión (`src/main.rs`, línea 60).
 
 - La propiedad debe ser de tipo `STRING` y formato 8, y su contenido debe
   coincidir byte a byte con el valor de la variable (por ejemplo,
@@ -178,7 +178,7 @@ No es una capa de protección, sino información de diagnóstico. El WM
 registra a qué servidor se ha conectado (display, fabricante, release, ID
 de la raíz y tamaño de pantalla; verificado en A7). Los registros no
 vuelcan el entorno: el WM solo lee `DISPLAY` y `CRIMSON_SANDBOX_TOKEN`
-(`src/main.rs`, líneas 58-59), y desde F4 `HOME`, como directorio de
+(`src/main.rs`, líneas 59-60), y desde F4 `HOME`, como directorio de
 trabajo de los programas que lanza (ADR 0006). Nunca imprime el valor del
 token.
 
@@ -275,12 +275,12 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
 | 11 | `DISPLAY` ausente o vacío; socket inexistente o inaccesible; sin cookie `MIT-MAGIC-COOKIE-1` para el display en el archivo de autorización (`XAUTHORITY` o, si no está definida, `$HOME/.Xauthority`), o imposible determinar o leer ese archivo; o el servidor rechaza la conexión inicial (respuesta `Failed` o `Authenticate`, por ejemplo una cookie errónea) o hay un error de E/S durante ella |
 | 12 | Ya hay otro gestor (`_NET_SUPPORTING_WM_CHECK` o `BadAccess`) |
 | 13 | Se perdió la conexión X durante la ejecución |
-| 14 | Error de protocolo inesperado al arrancar: por ejemplo, la pantalla indicada no existe, ningún código de tecla produce la tecla de un atajo o falla la captura de un atajo (el de salida, desde F3 los de foco del ADR 0005 y desde F5 los de escritorio del ADR 0007) |
+| 14 | Error de protocolo inesperado al arrancar: por ejemplo, la pantalla indicada no existe, ningún código de tecla produce la tecla de un atajo o falla la captura de un atajo (el de salida, desde F3 los de foco del ADR 0005 y desde F5 los de escritorio del ADR 0007, desde F6 los de cierre del ADR 0008 y desde F7 el de pantalla completa del ADR 0009) |
 | 101 | `panic` de Rust con `panic = "unwind"` (el valor por defecto, que el proyecto no cambia). Se considera un bug; A9 comprueba que no ocurra |
 
 - **Errores X durante la ejecución:** los debidos a condiciones de carrera
   (`BadWindow`, `BadDrawable`, etc.) llegan como eventos de error; el WM los
-  registra y no termina (`src/wm.rs`, líneas 246-251). Desde F2, un error
+  registra y no termina (`src/wm.rs`, líneas 268-273). Desde F2, un error
   X en una consulta con respuesta sobre una ventana (por ejemplo,
   `GetWindowAttributes` de una ventana ya destruida) se registra y la
   ventana no se gestiona (ADR 0004). Solo la pérdida de la conexión lo

@@ -5,6 +5,11 @@
   Xvfb; las comprobaciones de sesión de A64 quedaron parciales por el mismo
   motivo que A9 (ver «Resultados de las pruebas de aceptación de F6»).
 - **Fecha:** 2026-10-13
+- **Actualización F7 (2026-10-14):** `_NET_SUPPORTED` pasa a 16 átomos con
+  `_NET_WM_STATE` y `_NET_WM_STATE_FULLSCREEN`, y se atienden las
+  peticiones `_NET_WM_STATE` sobre FULLSCREEN (ADR 0009). El renderizador
+  `ctypes` descrito abajo es ahora `tools/render-svg.py`. *La pantalla
+  completa, citada como aplazada, está resuelta.*
 
 ![Diagrama de F6: arranque e identificación, mensajes ICCCM y EWMH entre las aplicaciones, el servidor X11 y Crimson WM, políticas de las peticiones externas, salida y funciones aplazadas](../images/crimson-wm-f6-icccm-ewmh.png)
 

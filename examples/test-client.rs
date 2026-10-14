@@ -1,5 +1,5 @@
-//! Cliente X11 auxiliar de las pruebas de aceptación de F5 y F6 (ADR 0007 y
-//! 0008). Genera lo que las herramientas instaladas no pueden: el
+//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F7 (ADR 0007 a
+//! 0009). Genera lo que las herramientas instaladas no pueden: el
 //! `UnmapNotify` sintético de ICCCM §4.1.4, mensajes EWMH arbitrarios, la
 //! propiedad de una selección y una ventana que registra los mensajes
 //! `WM_PROTOCOLS` que recibe. No forma parte del WM: solo lo ejecutan los
@@ -15,11 +15,15 @@
 //!   perderla o agotar el plazo.
 //! - `redirect SEGUNDOS`: selecciona SubstructureRedirect en la raíz, como
 //!   un gestor sin EWMH ni `WM_Sn`, y lo conserva durante el plazo.
-//! - `window NOMBRE [--no-delete] [--take-focus] [--pair] [--seconds N]`:
-//!   crea y mapea una ventana normal con `WM_PROTOCOLS` (por defecto,
-//!   `WM_DELETE_WINDOW`) y escribe cada mensaje `WM_PROTOCOLS` recibido con
-//!   su marca de tiempo. Con `WM_DELETE_WINDOW` destruye sus ventanas y
-//!   termina. `--pair` crea otra ventana, NOMBRE-2, en la misma conexión.
+//! - `window NOMBRE [--no-delete] [--take-focus] [--pair] [--seconds N]
+//!   [--fullscreen] [--state ÁTOMO] [--dialog] [--geometry X Y ANCHO ALTO]
+//!   [--border N]`: crea y mapea una ventana con `WM_PROTOCOLS` (por
+//!   defecto, `WM_DELETE_WINDOW`) y escribe cada mensaje `WM_PROTOCOLS`
+//!   recibido con su marca de tiempo, y cada `ConfigureNotify` («sintético»
+//!   o «real», con x, y, ancho y alto). Con `WM_DELETE_WINDOW` destruye sus
+//!   ventanas y termina. `--pair` crea otra ventana, NOMBRE-2, en la misma
+//!   conexión. Antes de mapearla: `--fullscreen` y `--state` ponen átomos en
+//!   `_NET_WM_STATE`, y `--dialog`, el tipo diálogo.
 //!
 //! Solo se conecta a un DISPLAY de la forma `:N` con N distinto de 0.
 
@@ -193,16 +197,42 @@ fn client_window(
     let mut take_focus = false;
     let mut pair = false;
     let mut seconds = 60;
+    let mut states: Vec<String> = Vec::new();
+    let mut dialog = false;
+    let mut geometry: (i16, i16, u16, u16) = (0, 0, 200, 100);
+    let mut border: u16 = 0;
     let mut rest = options.iter();
-    while let Some(option) = rest.next() {
-        match *option {
+    let mut next =
+        |what: &str| -> Res<String> { Ok(rest.next().ok_or(format!("falta {what}"))?.to_string()) };
+    loop {
+        let Ok(option) = next("") else { break };
+        match option.as_str() {
             "--no-delete" => delete = false,
             "--take-focus" => take_focus = true,
             "--pair" => pair = true,
-            "--seconds" => seconds = rest.next().ok_or("falta N")?.parse()?,
+            "--seconds" => seconds = next("N")?.parse()?,
+            "--fullscreen" => states.push("_NET_WM_STATE_FULLSCREEN".into()),
+            "--state" => states.push(next("ÁTOMO")?),
+            "--dialog" => dialog = true,
+            "--geometry" => {
+                geometry = (
+                    next("X")?.parse()?,
+                    next("Y")?.parse()?,
+                    next("ANCHO")?.parse()?,
+                    next("ALTO")?.parse()?,
+                )
+            }
+            "--border" => border = next("N")?.parse()?,
             other => return Err(format!("opción desconocida: {other}").into()),
         }
     }
+    let state_atoms = states
+        .iter()
+        .map(|name| atom(conn, name))
+        .collect::<Res<Vec<_>>>()?;
+    let net_wm_state = atom(conn, "_NET_WM_STATE")?;
+    let window_type = atom(conn, "_NET_WM_WINDOW_TYPE")?;
+    let dialog_type = atom(conn, "_NET_WM_WINDOW_TYPE_DIALOG")?;
     let wm_protocols = atom(conn, "WM_PROTOCOLS")?;
     let wm_delete = atom(conn, "WM_DELETE_WINDOW")?;
     let wm_take_focus = atom(conn, "WM_TAKE_FOCUS")?;
@@ -226,11 +256,11 @@ fn client_window(
             COPY_DEPTH_FROM_PARENT,
             window,
             root,
-            0,
-            0,
-            200,
-            100,
-            0,
+            geometry.0,
+            geometry.1,
+            geometry.2,
+            geometry.3,
+            border,
             WindowClass::INPUT_OUTPUT,
             visual,
             &CreateWindowAux::new()
@@ -251,6 +281,24 @@ fn client_window(
             AtomEnum::ATOM,
             &protocols,
         )?;
+        if !state_atoms.is_empty() {
+            conn.change_property32(
+                PropMode::REPLACE,
+                window,
+                net_wm_state,
+                AtomEnum::ATOM,
+                &state_atoms,
+            )?;
+        }
+        if dialog {
+            conn.change_property32(
+                PropMode::REPLACE,
+                window,
+                window_type,
+                AtomEnum::ATOM,
+                &[dialog_type],
+            )?;
+        }
         conn.map_window(window)?;
         windows.push(window);
     }
@@ -259,6 +307,18 @@ fn client_window(
     let deadline = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < deadline {
         while let Some(event) = conn.poll_for_event()? {
+            if let Event::ConfigureNotify(c) = &event {
+                let kind = if c.response_type & 0x80 != 0 {
+                    "sintético"
+                } else {
+                    "real"
+                };
+                say(&format!(
+                    "ConfigureNotify {kind} 0x{:x} {} {} {} {}",
+                    c.window, c.x, c.y, c.width, c.height
+                ));
+                continue;
+            }
             let Event::ClientMessage(e) = event else {
                 continue;
             };

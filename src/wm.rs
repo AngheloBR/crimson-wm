@@ -17,6 +17,11 @@
 //! ventanas (`WM_DELETE_WINDOW`, `KillClient`), atiende las peticiones EWMH
 //! de activación, escritorios y cierre, sigue los cambios de `WM_HINTS` y
 //! `WM_PROTOCOLS` y publica `_NET_CLIENT_LIST(_STACKING)`.
+//!
+//! Pantalla completa (ADR 0009): `set_fullscreen` es el único punto que
+//! cambia `Client.fullscreen`; la geometría sale de `Clients::plan` y la
+//! ventana a pantalla completa sube con el foco y baja cuando se enfoca otra
+//! de su escritorio (`restack_fullscreen`).
 
 use std::collections::VecDeque;
 
@@ -33,13 +38,15 @@ use x11rb::protocol::xproto::{
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
 
-use crate::clients::{self, Class, Direction, InputModel, Kind, WindowInfo, WindowTypes};
+use crate::clients::{
+    self, Class, Direction, Frame, InputModel, Kind, Restore, WindowInfo, WindowTypes,
+};
 use crate::display::Target;
 use crate::error::Fatal;
-use crate::ewmh::{self, MessageTypes, Request, Source};
+use crate::ewmh::{self, MessageTypes, Request, Source, StateRead};
 use crate::icccm::{self, ICONIC_STATE, NORMAL_STATE, ProtocolAtoms, Protocols};
 use crate::keys::{self, Action, Repeats};
-use crate::layout::{self, Rect};
+use crate::layout::Rect;
 use crate::safeguards;
 use crate::spawn::Launcher;
 use crate::workspaces::{self, Switch, Workspaces};
@@ -62,6 +69,8 @@ x11rb::atom_manager! {
         _NET_NUMBER_OF_DESKTOPS,
         _NET_CURRENT_DESKTOP,
         _NET_WM_DESKTOP,
+        _NET_WM_STATE,
+        _NET_WM_STATE_FULLSCREEN,
         _NET_WM_WINDOW_TYPE,
         _NET_WM_WINDOW_TYPE_NORMAL,
         _NET_WM_WINDOW_TYPE_DIALOG,
@@ -223,6 +232,17 @@ fn event_loop<C: Connection>(
                 Some(Action::Kill) => {
                     if !repeats.autorepeat(&event) {
                         wm.kill()?;
+                    }
+                }
+                Some(Action::Fullscreen) => {
+                    if !repeats.autorepeat(&event) {
+                        if let Some(window) = wm.workspaces.current().focused() {
+                            let on = wm
+                                .workspaces
+                                .get(window)
+                                .is_some_and(|c| c.fullscreen.is_none());
+                            wm.set_fullscreen(window, on, "Mod4+f", false)?;
+                        }
                     }
                 }
                 None => {}
@@ -622,6 +642,7 @@ impl<C: Connection> Wm<'_, C> {
             .map_err(Fatal::lost)?
             .reply()
             .map_err(|e| Fatal::startup("QueryTree", e))?;
+        let mut fullscreen = Vec::new();
         for window in tree.children {
             let Some((info, map_state)) = self.window_info(window)? else {
                 continue;
@@ -631,7 +652,15 @@ impl<C: Connection> Wm<'_, C> {
             }
             if let Some(class) = clients::classify(&info, &self.window_types()) {
                 self.manage(window, class)?;
+                if info.fullscreen {
+                    fullscreen.push(window);
+                }
             }
+        }
+        // De abajo arriba: si varias piden pantalla completa, la más alta de
+        // la pila es la última y gana (ADR 0009).
+        for window in fullscreen {
+            self.set_fullscreen(window, true, "adopción", true)?;
         }
         self.arrange()?;
         self.set_focus(self.workspaces.current().fallback(), CURRENT_TIME)
@@ -658,7 +687,11 @@ impl<C: Connection> Wm<'_, C> {
             };
             if let Some(class) = clients::classify(&info, &self.window_types()) {
                 self.manage(window, class)?;
-                if class.kind == Kind::Tiled {
+                if info.fullscreen {
+                    // Pedida antes del mapeo (EWMH): ya aparece a pantalla
+                    // completa.
+                    self.set_fullscreen(window, true, "estado inicial", false)?;
+                } else if class.kind == Kind::Tiled {
                     // Se coloca antes de mapearla para que aparezca ya con
                     // su tamaño.
                     self.arrange()?;
@@ -685,8 +718,18 @@ impl<C: Connection> Wm<'_, C> {
     ///
     /// Vale también para las ventanas ocultas de otros escritorios: el
     /// servidor conserva la geometría de una ventana desmapeada.
+    ///
+    /// A pantalla completa (en mosaico o flotante) tampoco se concede nada:
+    /// el `ConfigureNotify` sintético lleva el área completa y el marco
+    /// guardado no cambia (ADR 0009).
     fn on_configure_request(&mut self, event: &ConfigureRequestEvent) -> Result<(), Fatal> {
         match self.workspaces.get(event.window) {
+            Some(client) if client.fullscreen.is_some() => {
+                let notify = synthetic_configure_notify(event.window, self.area);
+                self.conn
+                    .send_event(false, event.window, EventMask::STRUCTURE_NOTIFY, notify)
+                    .map_err(Fatal::lost)?;
+            }
             Some(client) if client.kind == Kind::Tiled => {
                 if let Some(rect) = client.geometry {
                     let notify = synthetic_configure_notify(event.window, rect);
@@ -770,6 +813,10 @@ impl<C: Connection> Wm<'_, C> {
                     .map_err(Fatal::lost)?
                     .ignore_error();
             }
+            // El WM solo retira lo suyo de `_NET_WM_STATE`: FULLSCREEN.
+            if removed.fullscreen {
+                self.write_fullscreen_state(window, false)?;
+            }
         }
         if gone == Gone::Withdrawn && active {
             // Retirada sintética de una ventana que el WM tiene mapeada
@@ -783,7 +830,7 @@ impl<C: Connection> Wm<'_, C> {
         if !active {
             return Ok(());
         }
-        if removed.kind == Kind::Tiled {
+        if removed.kind == Kind::Tiled || removed.fullscreen {
             self.arrange()?;
         }
         if removed.was_focused {
@@ -815,6 +862,7 @@ impl<C: Connection> Wm<'_, C> {
         if self.workspaces.current_mut().focus(event.event) {
             eprintln!("crimson-wm: foco en 0x{:x} (cliente)", event.event);
             self.publish_active(event.event)?;
+            self.restack_fullscreen()?;
         }
         Ok(())
     }
@@ -898,10 +946,33 @@ impl<C: Connection> Wm<'_, C> {
             moved.to + 1
         );
         self.publish_desktop(moved.window, moved.to)?;
+        self.restore_displaced(moved.displaced, moved.to)?;
         // Como en `show`: el foco cambia antes de ocultar la ventana.
         self.set_focus(self.workspaces.current().fallback(), time)?;
         self.hide(moved.window)?;
         if moved.kind == Kind::Tiled {
+            self.arrange()?;
+        }
+        Ok(())
+    }
+
+    /// La ventana que deja la pantalla completa en el escritorio de destino
+    /// de un movimiento (la última gana). Si el destino es el activo, se
+    /// reorganiza; si no, al mostrarse.
+    fn restore_displaced(
+        &mut self,
+        displaced: Option<(Window, Restore)>,
+        desk: usize,
+    ) -> Result<(), Fatal> {
+        let Some((window, restore)) = displaced else {
+            return Ok(());
+        };
+        eprintln!(
+            "crimson-wm: ventana 0x{window:x} sale de pantalla completa: llega otra al escritorio {}",
+            desk + 1
+        );
+        self.restore_window(window, restore)?;
+        if desk == self.workspaces.index() {
             self.arrange()?;
         }
         Ok(())
@@ -924,6 +995,7 @@ impl<C: Connection> Wm<'_, C> {
             moved.to + 1
         );
         self.publish_desktop(window, moved.to)?;
+        self.restore_displaced(moved.displaced, moved.to)?;
         let current = self.workspaces.index();
         if moved.from == current {
             if moved.was_focused {
@@ -1029,6 +1101,8 @@ impl<C: Connection> Wm<'_, C> {
             current_desktop: self.atoms._NET_CURRENT_DESKTOP,
             wm_desktop: self.atoms._NET_WM_DESKTOP,
             close_window: self.atoms._NET_CLOSE_WINDOW,
+            wm_state: self.atoms._NET_WM_STATE,
+            fullscreen: self.atoms._NET_WM_STATE_FULLSCREEN,
         };
         let decoded = ewmh::decode(
             &types,
@@ -1058,6 +1132,21 @@ impl<C: Connection> Wm<'_, C> {
                 time,
                 source,
             })) => self.close(window, time, &format!("_NET_CLOSE_WINDOW ({source:?})")),
+            Some(Ok(Request::Fullscreen {
+                window,
+                action,
+                source,
+            })) => {
+                let Some(client) = self.workspaces.get(window) else {
+                    eprintln!(
+                        "crimson-wm: _NET_WM_STATE ignorada: 0x{window:x} no está gestionada"
+                    );
+                    return Ok(());
+                };
+                let on = action.apply(client.fullscreen.is_some());
+                let origin = format!("_NET_WM_STATE {action:?} ({source:?})");
+                self.set_fullscreen(window, on, &origin, false)
+            }
         }
     }
 
@@ -1167,7 +1256,8 @@ impl<C: Connection> Wm<'_, C> {
                 .map_err(Fatal::lost)?;
             self.focus_request = cookie.sequence_number();
             eprintln!("crimson-wm: sin foco");
-            return self.publish_active(NONE);
+            self.publish_active(NONE)?;
+            return self.restack_fullscreen();
         };
 
         self.workspaces.current_mut().focus(window);
@@ -1206,7 +1296,209 @@ impl<C: Connection> Wm<'_, C> {
             self.focus_request = cookie.sequence_number();
         }
         eprintln!("crimson-wm: foco en 0x{window:x} ({input:?})");
-        self.publish_active(window)
+        self.publish_active(window)?;
+        self.restack_fullscreen()
+    }
+
+    /// Pantalla completa (ADR 0009): entra o sale, de forma idempotente,
+    /// para cualquier ventana gestionada, también de un escritorio oculto
+    /// (sin cambiar de escritorio ni el foco). Es el único punto que cambia
+    /// `Client.fullscreen`.
+    ///
+    /// - Al entrar, una flotante guarda su marco real (`GetGeometry`). Con
+    ///   `adopting`, un marco que ya ocupa el área es el de una pantalla
+    ///   completa anterior y no se guarda: al salir se usa el de respaldo.
+    /// - Si otra ventana de su escritorio estaba a pantalla completa, la
+    ///   deja (la última gana).
+    /// - `_NET_WM_STATE` solo cambia en `_NET_WM_STATE_FULLSCREEN`.
+    /// - Si la ventana desaparece entre medias, no se cambia nada: su
+    ///   `DestroyNotify` la olvidará.
+    fn set_fullscreen(
+        &mut self,
+        window: Window,
+        on: bool,
+        origin: &str,
+        adopting: bool,
+    ) -> Result<(), Fatal> {
+        let Some(client) = self.workspaces.get(window) else {
+            return Ok(());
+        };
+        if client.fullscreen.is_some() == on {
+            return Ok(());
+        }
+        let kind = client.kind;
+        let desk = if on {
+            let frame = match kind {
+                Kind::Tiled => None,
+                Kind::Floating => {
+                    let Some(frame) = self.frame_of(window)? else {
+                        return Ok(());
+                    };
+                    (!adopting || frame.rect != self.area).then_some(frame)
+                }
+            };
+            // Primero la propiedad: si no se puede actualizar sin perder
+            // estados ajenos, la ventana no entra (el modelo y lo publicado
+            // siguen coherentes).
+            if self.write_fullscreen_state(window, true)? != StateWrite::Done {
+                return Ok(());
+            }
+            let Some(entered) = self.workspaces.enter_fullscreen(window, Restore { frame }) else {
+                return Ok(());
+            };
+            if let Some((other, restore)) = entered.displaced {
+                eprintln!(
+                    "crimson-wm: ventana 0x{other:x} sale de pantalla completa: la ocupa 0x{window:x}"
+                );
+                self.restore_window(other, restore)?;
+            }
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x} a pantalla completa ({origin}) en el escritorio {}",
+                entered.desk + 1
+            );
+            entered.desk
+        } else {
+            let Some((desk, restore)) = self.workspaces.leave_fullscreen(window) else {
+                return Ok(());
+            };
+            self.restore_window(window, restore)?;
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x} sale de pantalla completa ({origin}) en el escritorio {}",
+                desk + 1
+            );
+            desk
+        };
+        if desk == self.workspaces.index() {
+            self.arrange()?;
+        }
+        self.dirty.stacking = true;
+        Ok(())
+    }
+
+    /// Devuelve una ventana que ya ha salido de pantalla completa en el
+    /// modelo a su estado anterior: retira FULLSCREEN de `_NET_WM_STATE` y,
+    /// si es flotante, le devuelve su marco (o el de respaldo si se
+    /// desconoce). Una en mosaico recupera su hueco con `arrange` (o al
+    /// mostrarse su escritorio).
+    fn restore_window(&mut self, window: Window, restore: Restore) -> Result<(), Fatal> {
+        self.write_fullscreen_state(window, false)?;
+        if self.workspaces.get(window).map(|c| c.kind) != Some(Kind::Floating) {
+            return Ok(());
+        }
+        let frame = restore.frame.unwrap_or_else(|| Frame::fallback(self.area));
+        let aux = ConfigureWindowAux::new()
+            .x(i32::from(frame.rect.x))
+            .y(i32::from(frame.rect.y))
+            .width(u32::from(frame.rect.width))
+            .height(u32::from(frame.rect.height))
+            .border_width(u32::from(frame.border));
+        self.conn
+            .configure_window(window, &aux)
+            .map_err(Fatal::lost)?
+            .ignore_error();
+        Ok(())
+    }
+
+    /// Marco real de una ventana (`GetGeometry`). `None` si ya no existe.
+    fn frame_of(&self, window: Window) -> Result<Option<Frame>, Fatal> {
+        let reply = self.conn.get_geometry(window).map_err(Fatal::lost)?.reply();
+        Ok(reply_or_gone(reply, window, "GetGeometry")?.map(|g| Frame {
+            rect: Rect {
+                x: g.x,
+                y: g.y,
+                width: g.width,
+                height: g.height,
+            },
+            border: g.border_width,
+        }))
+    }
+
+    /// Activa o retira `_NET_WM_STATE_FULLSCREEN` en `_NET_WM_STATE` de la
+    /// ventana, conservando todos los demás átomos en su orden (ADR 0009).
+    ///
+    /// Se lee la propiedad completa, de cualquier tipo, hasta
+    /// `ewmh::MAX_STATE_ATOMS` átomos, y solo se reescribe si es una lista de
+    /// átomos leída entera. La lectura, la decisión y la escritura se hacen
+    /// con el servidor capturado (`GrabServer`), así que ningún cliente puede
+    /// cambiarla entre medias. Si es inválida o demasiado grande, no se
+    /// escribe nada y se registra (`Refused`); si la ventana ya no existe,
+    /// `Gone`.
+    fn write_fullscreen_state(&self, window: Window, on: bool) -> Result<StateWrite, Fatal> {
+        self.conn.grab_server().map_err(Fatal::lost)?;
+        let outcome = self.update_fullscreen_state(window, on);
+        self.conn.ungrab_server().map_err(Fatal::lost)?;
+        outcome
+    }
+
+    fn update_fullscreen_state(&self, window: Window, on: bool) -> Result<StateWrite, Fatal> {
+        let Some(read) = self.read_state(window)? else {
+            return Ok(StateWrite::Gone);
+        };
+        let atom_type = u32::from(AtomEnum::ATOM);
+        match ewmh::update_state(&read, atom_type, self.atoms._NET_WM_STATE_FULLSCREEN, on) {
+            Ok(None) => Ok(StateWrite::Done),
+            Ok(Some(states)) => {
+                self.conn
+                    .change_property32(
+                        PropMode::REPLACE,
+                        window,
+                        self.atoms._NET_WM_STATE,
+                        AtomEnum::ATOM,
+                        &states,
+                    )
+                    .map_err(Fatal::lost)?
+                    .ignore_error();
+                Ok(StateWrite::Done)
+            }
+            Err(error) => {
+                eprintln!(
+                    "crimson-wm: _NET_WM_STATE de 0x{window:x} no se modifica ({error:?}): se conserva tal cual"
+                );
+                Ok(StateWrite::Refused)
+            }
+        }
+    }
+
+    /// `_NET_WM_STATE` completo, de cualquier tipo, hasta
+    /// `ewmh::MAX_STATE_ATOMS` átomos. `None` si la ventana ya no existe.
+    fn read_state(&self, window: Window) -> Result<Option<StateRead>, Fatal> {
+        let reply = self
+            .conn
+            .get_property(
+                false,
+                window,
+                self.atoms._NET_WM_STATE,
+                AtomEnum::ANY,
+                0,
+                ewmh::MAX_STATE_ATOMS,
+            )
+            .map_err(Fatal::lost)?
+            .reply();
+        match reply {
+            Ok(reply) => Ok(Some(state_read(&reply))),
+            Err(ReplyError::ConnectionError(e)) => Err(Fatal::lost(e)),
+            Err(ReplyError::X11Error(_)) => Ok(None),
+        }
+    }
+
+    /// La ventana a pantalla completa del escritorio activo sube por encima
+    /// de todo si tiene el foco y baja al fondo si no: así la enfocada, en
+    /// mosaico o flotante, queda visible (EWMH, ADR 0009).
+    fn restack_fullscreen(&mut self) -> Result<(), Fatal> {
+        let desk = self.workspaces.current();
+        let Some(window) = desk.fullscreen() else {
+            return Ok(());
+        };
+        let mode = if desk.focused() == Some(window) {
+            StackMode::ABOVE
+        } else {
+            StackMode::BELOW
+        };
+        self.conn
+            .configure_window(window, &ConfigureWindowAux::new().stack_mode(mode))
+            .map_err(Fatal::lost)?;
+        self.dirty.stacking = true;
+        Ok(())
     }
 
     /// `_NET_ACTIVE_WINDOW` en la raíz (EWMH), con None si no hay ninguna.
@@ -1296,7 +1588,21 @@ impl<C: Connection> Wm<'_, C> {
     /// Termina con una petición con respuesta: sin ella, el proceso podría
     /// salir antes de que el servidor procese las anteriores, y otro cliente
     /// vería todavía el estado antiguo.
-    fn release(&self) -> Result<(), Fatal> {
+    ///
+    /// Antes, todas las ventanas a pantalla completa, de todos los
+    /// escritorios, vuelven a su hueco o a su marco y pierden FULLSCREEN
+    /// (ADR 0009).
+    fn release(&mut self) -> Result<(), Fatal> {
+        for desk in 0..workspaces::COUNT {
+            let Some(window) = self.workspaces.desk(desk).and_then(|d| d.fullscreen()) else {
+                continue;
+            };
+            if let Some((_, restore)) = self.workspaces.leave_fullscreen(window) {
+                self.restore_window(window, restore)?;
+                self.place(desk)?;
+                eprintln!("crimson-wm: ventana 0x{window:x} sale de pantalla completa (salida)");
+            }
+        }
         let hidden = (0..workspaces::COUNT)
             .filter(|&d| d != self.workspaces.index())
             .filter_map(|d| self.workspaces.desk(d))
@@ -1339,36 +1645,60 @@ impl<C: Connection> Wm<'_, C> {
         }
     }
 
-    /// Aplica el diseño master-stack al escritorio activo. Solo se envía la
-    /// geometría de las ventanas que cambian; después se suben las flotantes
-    /// por encima.
+    /// Aplica al escritorio activo su plan de geometría (master-stack y
+    /// pantalla completa, `Clients::plan`). Solo se envía la geometría de las
+    /// ventanas que cambian; después se suben las flotantes y se coloca en la
+    /// pila la de pantalla completa según el foco.
     fn arrange(&mut self) -> Result<(), Fatal> {
-        let tiled: Vec<Window> = self.workspaces.current().tiled().collect();
-        let rects = layout::master_stack(self.area, tiled.len());
-        for (window, rect) in tiled.into_iter().zip(rects) {
-            if self.workspaces.current_mut().set_geometry(window, rect) {
-                let aux = ConfigureWindowAux::new()
-                    .x(i32::from(rect.x))
-                    .y(i32::from(rect.y))
-                    .width(u32::from(rect.width))
-                    .height(u32::from(rect.height))
-                    .border_width(0);
-                self.conn
-                    .configure_window(window, &aux)
-                    .map_err(Fatal::lost)?;
-            }
-        }
+        self.place(self.workspaces.index())?;
         let raise = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
-        for window in self.workspaces.current().floating() {
+        let floating: Vec<Window> = self
+            .workspaces
+            .current()
+            .floating()
+            .filter(|&w| {
+                self.workspaces
+                    .get(w)
+                    .is_some_and(|c| c.fullscreen.is_none())
+            })
+            .collect();
+        for window in floating {
             self.conn
                 .configure_window(window, &raise)
                 .map_err(Fatal::lost)?;
         }
         self.dirty.stacking = true;
+        self.restack_fullscreen()
+    }
+
+    /// Geometría del plan de un escritorio, sin tocar el apilamiento. Sirve
+    /// también para los ocultos (salida normal).
+    fn place(&mut self, desk: usize) -> Result<(), Fatal> {
+        let area = self.area;
+        let Some(clients) = self.workspaces.desk_mut(desk) else {
+            return Ok(());
+        };
+        let mut changed = Vec::new();
+        for (window, rect) in clients.plan(area) {
+            if clients.set_geometry(window, rect) {
+                changed.push((window, rect));
+            }
+        }
+        for (window, rect) in changed {
+            let aux = ConfigureWindowAux::new()
+                .x(i32::from(rect.x))
+                .y(i32::from(rect.y))
+                .width(u32::from(rect.width))
+                .height(u32::from(rect.height))
+                .border_width(0);
+            self.conn
+                .configure_window(window, &aux)
+                .map_err(Fatal::lost)?;
+        }
         Ok(())
     }
 
-    /// Lee lo necesario para clasificar una ventana, con las cinco
+    /// Lee lo necesario para clasificar una ventana, con las seis
     /// peticiones enviadas juntas. `None`: la ventana ya no existe.
     ///
     /// Todas las propiedades se leen sin interpretar y se analizan aquí: un
@@ -1396,14 +1726,26 @@ impl<C: Connection> Wm<'_, C> {
             AtomEnum::ATOM,
             icccm::MAX_PROTOCOLS,
         )?;
+        let states = property(
+            self.atoms._NET_WM_STATE,
+            AtomEnum::ANY,
+            ewmh::MAX_STATE_ATOMS,
+        )?;
 
         let attributes = reply_or_gone(attributes.reply(), window, "GetWindowAttributes")?;
         let transient = reply_or_gone(transient.reply(), window, "GetProperty(WM_TRANSIENT_FOR)")?;
         let types = reply_or_gone(types.reply(), window, "GetProperty(_NET_WM_WINDOW_TYPE)")?;
         let hints = reply_or_gone(hints.reply(), window, "GetProperty(WM_HINTS)")?;
         let protocols = reply_or_gone(protocols.reply(), window, "GetProperty(WM_PROTOCOLS)")?;
-        let (Some(attributes), Some(transient), Some(types), Some(hints), Some(protocols)) =
-            (attributes, transient, types, hints, protocols)
+        let states = reply_or_gone(states.reply(), window, "GetProperty(_NET_WM_STATE)")?;
+        let (
+            Some(attributes),
+            Some(transient),
+            Some(types),
+            Some(hints),
+            Some(protocols),
+            Some(states),
+        ) = (attributes, transient, types, hints, protocols, states)
         else {
             return Ok(None);
         };
@@ -1418,6 +1760,17 @@ impl<C: Connection> Wm<'_, C> {
             types: values32(&types),
             input: icccm::input_hint(&values32(&hints)),
             protocols: Protocols::parse(&values32(&protocols), self.protocol_atoms()),
+            fullscreen: match state_read(&states)
+                .requests_fullscreen(AtomEnum::ATOM.into(), self.atoms._NET_WM_STATE_FULLSCREEN)
+            {
+                Ok(fullscreen) => fullscreen,
+                Err(error) => {
+                    eprintln!(
+                        "crimson-wm: _NET_WM_STATE de 0x{window:x} no se interpreta ({error:?}): sin pantalla completa inicial"
+                    );
+                    false
+                }
+            },
         };
         Ok(Some((info, attributes.map_state)))
     }
@@ -1474,6 +1827,26 @@ impl<C: Connection> Wm<'_, C> {
             floating: &self.floating_types,
             unfocusable: &self.unfocusable_types,
         }
+    }
+}
+
+/// Resultado de actualizar `_NET_WM_STATE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StateWrite {
+    /// Escrita, o ya tenía el valor pedido.
+    Done,
+    /// Inválida o demasiado grande: no se ha tocado.
+    Refused,
+    /// La ventana ya no existe.
+    Gone,
+}
+
+fn state_read(reply: &x11rb::protocol::xproto::GetPropertyReply) -> StateRead {
+    StateRead {
+        type_: reply.type_,
+        format: reply.format,
+        bytes_after: reply.bytes_after,
+        values: reply.value32().map(Iterator::collect).unwrap_or_default(),
     }
 }
 

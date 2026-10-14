@@ -8,7 +8,7 @@
 
 use x11rb::protocol::xproto::Window;
 
-use crate::clients::{Class, Client, Clients, Kind, Removed};
+use crate::clients::{Class, Client, Clients, Kind, Removed, Restore};
 
 /// Número fijo de escritorios.
 pub const COUNT: usize = 8;
@@ -29,6 +29,17 @@ pub struct Moved {
     pub to: usize,
     /// Era la enfocada de su escritorio de origen.
     pub was_focused: bool,
+    /// Ventana del destino que deja la pantalla completa porque llega otra
+    /// que la tiene (la última gana, ADR 0009).
+    pub displaced: Option<(Window, Restore)>,
+}
+
+/// Una ventana ha entrado en pantalla completa.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entered {
+    pub desk: usize,
+    /// La que la tenía en ese escritorio y la deja.
+    pub displaced: Option<(Window, Restore)>,
 }
 
 /// Invariantes:
@@ -36,7 +47,8 @@ pub struct Moved {
 /// - `current` es menor que `COUNT`;
 /// - `previous`, si existe, es distinto de `current`;
 /// - el historial de cada escritorio solo contiene ventanas de ese
-///   escritorio que admiten foco (lo garantiza `Clients`).
+///   escritorio que admiten foco (lo garantiza `Clients`);
+/// - como mucho una ventana a pantalla completa por escritorio (ADR 0009).
 #[derive(Debug, Default)]
 pub struct Workspaces {
     desks: [Clients; COUNT],
@@ -63,6 +75,40 @@ impl Workspaces {
     /// Ventanas de un escritorio. `None` fuera de rango.
     pub fn desk(&self, index: usize) -> Option<&Clients> {
         self.desks.get(index)
+    }
+
+    pub fn desk_mut(&mut self, index: usize) -> Option<&mut Clients> {
+        self.desks.get_mut(index)
+    }
+
+    /// Pone la ventana a pantalla completa con lo necesario para
+    /// restaurarla. Si otra la tenía en su escritorio, la deja (la última
+    /// gana) y se devuelve para restaurarla. `None`, sin cambiar nada, si no
+    /// está gestionada o ya estaba a pantalla completa (idempotente).
+    pub fn enter_fullscreen(&mut self, window: Window, restore: Restore) -> Option<Entered> {
+        let desk = self.locate(window)?;
+        if self.desks[desk].get(window)?.fullscreen.is_some() {
+            return None;
+        }
+        let displaced = self.desks[desk]
+            .fullscreen()
+            .and_then(|other| self.leave_fullscreen(other).map(|(_, r)| (other, r)));
+        self.desks[desk].get_mut(window)?.fullscreen = Some(restore);
+        Some(Entered { desk, displaced })
+    }
+
+    /// Quita la pantalla completa y devuelve el escritorio y lo necesario
+    /// para restaurarla. Una flotante pierde la geometría de pantalla
+    /// completa (`geometry` solo describe lo que coloca el WM). `None`, sin
+    /// cambiar nada, si no estaba a pantalla completa (idempotente).
+    pub fn leave_fullscreen(&mut self, window: Window) -> Option<(usize, Restore)> {
+        let desk = self.locate(window)?;
+        let client = self.desks[desk].get_mut(window)?;
+        let restore = client.fullscreen.take()?;
+        if client.kind == Kind::Floating {
+            client.geometry = None;
+        }
+        Some((desk, restore))
     }
 
     /// Escritorio de la ventana, si está gestionada.
@@ -153,6 +199,12 @@ impl Workspaces {
         }
         let (client, was_focused) = self.desks[from].take(window)?;
         let kind = client.kind;
+        // Una ventana a pantalla completa la conserva; si el destino ya
+        // tenía otra, esa la deja (la última gana).
+        let displaced = match (client.fullscreen, self.desks[to].fullscreen()) {
+            (Some(_), Some(other)) => self.leave_fullscreen(other).map(|(_, r)| (other, r)),
+            _ => None,
+        };
         self.desks[to].adopt(client, focus);
         Some(Moved {
             window,
@@ -160,6 +212,7 @@ impl Workspaces {
             from,
             to,
             was_focused,
+            displaced,
         })
     }
 
@@ -175,6 +228,11 @@ impl Workspaces {
             assert!(!list[i + 1..].contains(w), "_NET_CLIENT_LIST repetida");
         }
         for (i, desk) in self.desks.iter().enumerate() {
+            let fullscreen = desk
+                .windows()
+                .filter(|&w| desk.get(w).is_some_and(|c| c.fullscreen.is_some()))
+                .count();
+            assert!(fullscreen <= 1, "{fullscreen} a pantalla completa en {i}");
             desk.assert_consistent();
             for w in desk.windows() {
                 assert_eq!(self.locate(w), Some(i), "ventana {w} en varios escritorios");
@@ -309,6 +367,7 @@ mod tests {
                 from: 0,
                 to: 4,
                 was_focused: true,
+                displaced: None,
             })
         );
         // Sale del origen, que vuelve a la anterior del historial.
@@ -432,6 +491,96 @@ mod tests {
         ws.assert_consistent();
     }
 
+    // U17: pantalla completa por escritorio.
+
+    const TILED_RESTORE: Restore = Restore { frame: None };
+
+    #[test]
+    fn una_pantalla_completa_por_escritorio() {
+        let mut ws = Workspaces::default();
+        for w in [1, 2, 3] {
+            ws.manage(w, TILED);
+        }
+        let entered = ws.enter_fullscreen(2, TILED_RESTORE).unwrap();
+        assert_eq!((entered.desk, entered.displaced), (0, None));
+        assert_eq!(ws.current().fullscreen(), Some(2));
+        // Idempotente.
+        assert_eq!(ws.enter_fullscreen(2, TILED_RESTORE), None);
+        // La última gana: la anterior sale y se devuelve para restaurarla.
+        let entered = ws.enter_fullscreen(3, TILED_RESTORE).unwrap();
+        assert_eq!(entered.displaced, Some((2, TILED_RESTORE)));
+        assert_eq!(ws.current().fullscreen(), Some(3));
+        assert!(ws.get(2).unwrap().fullscreen.is_none());
+        assert_eq!(ws.leave_fullscreen(3), Some((0, TILED_RESTORE)));
+        assert_eq!(ws.leave_fullscreen(3), None, "idempotente");
+        assert_eq!(ws.enter_fullscreen(9, TILED_RESTORE), None, "no gestionada");
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn pantalla_completa_independiente_por_escritorio() {
+        let mut ws = Workspaces::default();
+        ws.manage(1, TILED);
+        ws.enter_fullscreen(1, TILED_RESTORE);
+        ws.switch(2);
+        ws.manage(20, FLOATING);
+        let restore = Restore {
+            frame: Some(crate::clients::Frame {
+                rect: crate::layout::Rect {
+                    x: 5,
+                    y: 6,
+                    width: 70,
+                    height: 80,
+                },
+                border: 1,
+            }),
+        };
+        // Una ventana de un escritorio oculto también puede entrar.
+        assert_eq!(ws.enter_fullscreen(20, restore).unwrap().displaced, None);
+        assert_eq!(ws.desk(0).unwrap().fullscreen(), Some(1));
+        assert_eq!(ws.desk(2).unwrap().fullscreen(), Some(20));
+        // Una flotante pierde la geometría de pantalla completa al salir.
+        ws.desk_mut(2).unwrap().set_geometry(
+            20,
+            crate::layout::Rect {
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+        );
+        assert_eq!(ws.leave_fullscreen(20), Some((2, restore)));
+        assert_eq!(ws.get(20).unwrap().geometry, None);
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn mover_una_ventana_a_pantalla_completa() {
+        let mut ws = Workspaces::default();
+        ws.manage(1, TILED);
+        ws.manage(2, TILED);
+        ws.current_mut().focus(1);
+        ws.enter_fullscreen(1, TILED_RESTORE);
+        ws.switch(3);
+        ws.manage(30, TILED);
+        ws.enter_fullscreen(30, TILED_RESTORE);
+        ws.switch(0);
+        // Conserva el estado; en el destino, la anterior lo deja.
+        let moved = ws.move_focused(3).unwrap();
+        assert_eq!(moved.displaced, Some((30, TILED_RESTORE)));
+        assert_eq!(ws.desk(3).unwrap().fullscreen(), Some(1));
+        assert_eq!(ws.current().fullscreen(), None);
+        // Sin otra en el destino, no hay desplazada.
+        ws.enter_fullscreen(2, TILED_RESTORE);
+        assert_eq!(ws.move_window(2, 5, false).unwrap().displaced, None);
+        assert_eq!(ws.desk(5).unwrap().fullscreen(), Some(2));
+        // Una ventana normal no desplaza a la de pantalla completa.
+        ws.manage(4, TILED);
+        assert_eq!(ws.move_window(4, 5, false).unwrap().displaced, None);
+        assert_eq!(ws.desk(5).unwrap().fullscreen(), Some(2));
+        ws.assert_consistent();
+    }
+
     /// Secuencia larga de operaciones pseudoaleatorias (generador
     /// congruencial con semilla fija): los invariantes se mantienen siempre.
     #[test]
@@ -482,6 +631,16 @@ mod tests {
                 }
                 7 => {
                     ws.current_mut().zoom();
+                }
+                8 if next(3) == 0 => {
+                    if next(2) == 0 {
+                        let entered = ws.enter_fullscreen(window, Restore { frame: None });
+                        if let Some(e) = entered {
+                            assert_eq!(ws.desk(e.desk).unwrap().fullscreen(), Some(window));
+                        }
+                    } else {
+                        ws.leave_fullscreen(window);
+                    }
                 }
                 8 if next(2) == 0 => {
                     let from = ws.locate(window);

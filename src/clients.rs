@@ -5,7 +5,7 @@
 use x11rb::protocol::xproto::{Atom, Window};
 
 use crate::icccm::Protocols;
-use crate::layout::Rect;
+use crate::layout::{self, Rect};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -74,11 +74,54 @@ pub struct Client {
     /// cambian `WM_HINTS` o `WM_PROTOCOLS` (`PropertyNotify`, ADR 0008).
     pub input: InputModel,
     pub delete_window: bool,
-    /// Última geometría asignada por el WM (solo en mosaico).
+    /// Última geometría asignada por el WM: en mosaico o a pantalla
+    /// completa.
     pub geometry: Option<Rect>,
+    /// `Some` mientras está a pantalla completa (ADR 0009). Es la única
+    /// fuente de verdad: `_NET_WM_STATE` y la geometría se derivan de él.
+    pub fullscreen: Option<Restore>,
     /// Orden de gestión en todos los escritorios, para `_NET_CLIENT_LIST`
     /// (lo asigna `Workspaces`).
     pub order: u64,
+}
+
+/// Geometría completa de una ventana: rectángulo y borde.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frame {
+    pub rect: Rect,
+    pub border: u16,
+}
+
+impl Frame {
+    /// Marco para una flotante que sale de pantalla completa sin marco
+    /// conocido (adoptada tras una terminación abrupta): centrado, con dos
+    /// tercios del área y sin borde. No es su geometría original, que se
+    /// desconoce (ADR 0009).
+    pub fn fallback(area: Rect) -> Frame {
+        let width = (u32::from(area.width) * 2 / 3).max(1);
+        let height = (u32::from(area.height) * 2 / 3).max(1);
+        let offset =
+            |total: u16, size: u32| i16::try_from((u32::from(total) - size) / 2).unwrap_or(0);
+        Frame {
+            rect: Rect {
+                x: area.x.saturating_add(offset(area.width, width)),
+                y: area.y.saturating_add(offset(area.height, height)),
+                width: u16::try_from(width).unwrap_or(u16::MAX),
+                height: u16::try_from(height).unwrap_or(u16::MAX),
+            },
+            border: 0,
+        }
+    }
+}
+
+/// Estado de pantalla completa de una ventana (ADR 0009): lo necesario para
+/// devolverla a su estado anterior. En mosaico no hace falta nada: su hueco
+/// sale de su posición en la lista, que no cambia. Una flotante guarda su
+/// marco real; `None` si se desconoce (adoptada tras una terminación
+/// abrupta).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Restore {
+    pub frame: Option<Frame>,
 }
 
 /// Resultado de dejar de gestionar una ventana.
@@ -87,6 +130,8 @@ pub struct Removed {
     pub kind: Kind,
     /// Era la ventana enfocada: hay que dar el foco a otra.
     pub was_focused: bool,
+    /// Estaba a pantalla completa.
+    pub fullscreen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +192,7 @@ impl Clients {
             input: class.input,
             delete_window: class.delete_window,
             geometry: None,
+            fullscreen: None,
             order: 0,
         });
         true
@@ -159,6 +205,7 @@ impl Clients {
         self.take(window).map(|(client, was_focused)| Removed {
             kind: client.kind,
             was_focused,
+            fullscreen: client.fullscreen.is_some(),
         })
     }
 
@@ -198,6 +245,34 @@ impl Clients {
     /// Todas las ventanas, en orden de llegada.
     pub fn windows(&self) -> impl Iterator<Item = Window> + '_ {
         self.list.iter().map(|c| c.window)
+    }
+
+    /// La ventana a pantalla completa, si la hay (como mucho una por
+    /// escritorio; lo garantiza `Workspaces`).
+    pub fn fullscreen(&self) -> Option<Window> {
+        self.list
+            .iter()
+            .find(|c| c.fullscreen.is_some())
+            .map(|c| c.window)
+    }
+
+    /// Geometría de cada ventana colocada por el WM en `area`: las del
+    /// mosaico que no están a pantalla completa, en orden, con
+    /// `master_stack`, y la de pantalla completa, sea del tipo que sea, con
+    /// el área entera. La ventana a pantalla completa sale del cálculo del
+    /// mosaico pero conserva su posición en la lista: al salir recupera su
+    /// hueco.
+    pub fn plan(&self, area: Rect) -> Vec<(Window, Rect)> {
+        let tiled: Vec<Window> = self
+            .list
+            .iter()
+            .filter(|c| c.kind == Kind::Tiled && c.fullscreen.is_none())
+            .map(|c| c.window)
+            .collect();
+        let rects = layout::master_stack(area, tiled.len());
+        let mut plan: Vec<(Window, Rect)> = tiled.into_iter().zip(rects).collect();
+        plan.extend(self.fullscreen().map(|w| (w, area)));
+        plan
     }
 
     /// Ventanas del mosaico, en orden: la primera es la maestra.
@@ -334,6 +409,9 @@ pub struct WindowInfo {
     pub input: Option<bool>,
     /// Protocolos de `WM_PROTOCOLS` que usa el WM.
     pub protocols: Protocols,
+    /// `_NET_WM_STATE` contiene `_NET_WM_STATE_FULLSCREEN`: la ventana pide
+    /// empezar a pantalla completa (ADR 0009). No afecta a la clasificación.
+    pub fullscreen: bool,
 }
 
 /// Átomos de `_NET_WM_WINDOW_TYPE` que reconoce la clasificación.
@@ -443,7 +521,8 @@ mod tests {
             clients.unmanage(1),
             Some(Removed {
                 kind: Kind::Tiled,
-                was_focused: false
+                was_focused: false,
+                fullscreen: false
             })
         );
         assert_eq!(clients.tiled().collect::<Vec<_>>(), vec![2, 3]);
@@ -483,6 +562,82 @@ mod tests {
         assert!(clients.set_geometry(1, rect(20)));
         assert_eq!(clients.get(1).and_then(|c| c.geometry), Some(rect(20)));
         assert!(!clients.set_geometry(9, rect(10)));
+    }
+
+    // U17: plan de geometría con pantalla completa.
+
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 1280,
+        height: 720,
+    };
+
+    fn r(x: i16, y: i16, width: u16, height: u16) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn plan_sin_pantalla_completa() {
+        let clients = with(&[(1, TILED), (9, FLOATING), (2, TILED), (3, TILED)]);
+        assert_eq!(
+            clients.plan(AREA),
+            vec![
+                (1, r(0, 0, 640, 720)),
+                (2, r(640, 0, 640, 360)),
+                (3, r(640, 360, 640, 360)),
+            ]
+        );
+        assert_eq!(clients.fullscreen(), None);
+    }
+
+    #[test]
+    fn plan_con_pantalla_completa_en_mosaico() {
+        let mut clients = with(&[(1, TILED), (2, TILED), (3, TILED)]);
+        clients.get_mut(2).unwrap().fullscreen = Some(Restore { frame: None });
+        // Las demás se reparten el mosaico; la de pantalla completa, el área.
+        assert_eq!(
+            clients.plan(AREA),
+            vec![(1, r(0, 0, 640, 720)), (3, r(640, 0, 640, 720)), (2, AREA)]
+        );
+        // Al salir recupera su hueco: su posición en la lista no ha cambiado.
+        clients.get_mut(2).unwrap().fullscreen = None;
+        assert_eq!(clients.plan(AREA)[1], (2, r(640, 0, 640, 360)));
+        assert_eq!(clients.tiled().collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn plan_con_pantalla_completa_flotante() {
+        let mut clients = with(&[(1, TILED), (9, FLOATING)]);
+        clients.get_mut(9).unwrap().fullscreen = Some(Restore {
+            frame: Some(Frame {
+                rect: r(10, 20, 300, 200),
+                border: 2,
+            }),
+        });
+        assert_eq!(clients.plan(AREA), vec![(1, AREA), (9, AREA)]);
+        assert_eq!(clients.fullscreen(), Some(9));
+        let removed = clients.unmanage(9).unwrap();
+        assert!(removed.fullscreen);
+        assert_eq!(clients.fullscreen(), None);
+    }
+
+    #[test]
+    fn marco_de_respaldo() {
+        let frame = Frame::fallback(AREA);
+        assert_eq!(frame.rect, r(213, 120, 853, 480));
+        assert_eq!(frame.border, 0);
+        // Centrado también en áreas impares o mínimas.
+        assert_eq!(
+            Frame::fallback(r(0, 0, 1279, 719)).rect,
+            r(213, 120, 852, 479)
+        );
+        assert_eq!(Frame::fallback(r(0, 0, 1, 1)).rect, r(0, 0, 1, 1));
     }
 
     // U8: foco.

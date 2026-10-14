@@ -1,7 +1,8 @@
-//! Atajos de teclado (ADR 0005 a 0008): una tabla fija capturada en la
+//! Atajos de teclado (ADR 0005 a 0009): una tabla fija capturada en la
 //! raíz, también con Bloq Mayús y Bloq Num activos. Incluye el atajo
 //! provisional de salida `Mod4+Shift+Escape` (ADR 0003), los de lanzamiento
-//! de aplicaciones, los de escritorios y los de cierre de ventanas.
+//! de aplicaciones, los de escritorios, los de cierre de ventanas y el de
+//! pantalla completa.
 
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
@@ -19,6 +20,7 @@ const XK_PRINT: Keysym = 0xff61;
 const XK_B: Keysym = 0x0062;
 const XK_D: Keysym = 0x0064;
 const XK_E: Keysym = 0x0065;
+const XK_F: Keysym = 0x0066;
 const XK_J: Keysym = 0x006a;
 const XK_K: Keysym = 0x006b;
 const XK_N: Keysym = 0x006e;
@@ -62,6 +64,8 @@ pub enum Action {
     /// Cierra a la fuerza la conexión del cliente de la ventana enfocada
     /// (`KillClient`): todas sus ventanas.
     Kill,
+    /// Alterna la pantalla completa de la ventana enfocada.
+    Fullscreen,
 }
 
 struct Binding {
@@ -192,6 +196,12 @@ const BINDINGS: &[Binding] = &[
         keysym: XK_W,
         name: "Mod4+Shift+w",
         action: Action::Kill,
+    },
+    Binding {
+        modifiers: MOD4,
+        keysym: XK_F,
+        name: "Mod4+f",
+        action: Action::Fullscreen,
     },
 ];
 
@@ -334,9 +344,9 @@ const REPEAT_INTERVAL: Timestamp = 300;
 ///   dan la vuelta cada 2^32 ms).
 ///
 /// Los atajos de escritorio que no son idempotentes (mover la ventana y
-/// volver al anterior) y los de cierre solo ignoran la repetición
-/// automática: mantener `Mod4+Shift+n` o `Mod4+w` no debe llevarse o cerrar
-/// una ventana tras otra.
+/// volver al anterior), los de cierre y el de pantalla completa solo
+/// ignoran la repetición automática: mantener `Mod4+Shift+n`, `Mod4+w` o
+/// `Mod4+f` no debe llevarse, cerrar o alternar una ventana tras otra.
 #[derive(Default)]
 pub struct Repeats {
     /// Última liberación de una tecla capturada: código y marca de tiempo.
@@ -470,8 +480,8 @@ mod tests {
 
     /// Tabla como la que produce `grab_bindings` con el mapa por defecto de
     /// Xvfb: Escape = 9, Return = 36, j = 44, k = 45, d = 40, e = 26,
-    /// b = 56, n = 57, Print = 107 y 218, 1 a 8 = 10 a 17, Tab = 23 y
-    /// w = 25.
+    /// b = 56, n = 57, Print = 107 y 218, 1 a 8 = 10 a 17, Tab = 23,
+    /// w = 25 y f = 41.
     fn bindings(num_lock: u16) -> Bindings {
         let mut keys = vec![
             (9, MOD4 | SHIFT, Action::Exit),
@@ -488,6 +498,7 @@ mod tests {
             (23, MOD4, Action::ViewPrevious),
             (25, MOD4, Action::Close),
             (25, MOD4 | SHIFT, Action::Kill),
+            (41, MOD4, Action::Fullscreen),
         ];
         for (index, keycode) in (10..=17).enumerate() {
             keys.push((keycode, MOD4, Action::View(index)));
@@ -745,6 +756,34 @@ mod tests {
         );
         // Atajos de control: obligatorios.
         assert!(close.required() && kill.required());
+    }
+
+    // U18: pantalla completa.
+
+    #[test]
+    fn atajo_de_pantalla_completa() {
+        let b = bindings(NUM_LOCK_MOD2);
+        let m4 = KeyButMask::MOD4;
+        assert_eq!(b.action_for(41, m4), Some(Action::Fullscreen));
+        for extra in [KeyButMask::LOCK, KeyButMask::MOD2] {
+            assert_eq!(b.action_for(41, m4 | extra), Some(Action::Fullscreen));
+        }
+        assert_eq!(b.action_for(41, KeyButMask::from(0u16)), None);
+        assert_eq!(b.action_for(41, m4 | KeyButMask::SHIFT), None);
+        let binding = BINDINGS
+            .iter()
+            .find(|b| b.action == Action::Fullscreen)
+            .unwrap();
+        assert_eq!(
+            (binding.modifiers, binding.keysym, binding.name),
+            (MOD4, XK_F, "Mod4+f")
+        );
+        assert!(binding.required(), "atajo de control: obligatorio");
+        assert_eq!(
+            BINDINGS.iter().filter(|b| b.keysym == XK_F).count(),
+            1,
+            "sin conflictos con otra combinación de f"
+        );
     }
 
     #[test]

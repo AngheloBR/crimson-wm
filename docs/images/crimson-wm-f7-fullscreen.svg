@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1560" viewBox="0 0 1400 1560" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F7: pantalla completa</title>
+  <desc id="desc">Diagrama técnico basado en el código de F7 (ADR 0009); no es una
+    captura. Muestra el estado normal y el de pantalla completa y cómo se
+    entra y se sale; qué se guarda (el marco de las flotantes) y qué se
+    calcula (el hueco en mosaico y el área completa); un ejemplo de mosaico
+    antes, a pantalla completa y restaurado; las reglas de apilamiento y foco
+    y de una ventana a pantalla completa por escritorio; las peticiones
+    _NET_WM_STATE; la salida normal y la recuperación tras un fallo, y lo
+    aplazado.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif; font-size: 14px; fill: #1F2328; }
+      .title { font-size: 26px; font-weight: 700; }
+      .h { font-size: 17px; font-weight: 700; }
+      .h2 { font-size: 15px; font-weight: 700; }
+      .muted { fill: #57606A; }
+      .accent { fill: #8B0A1F; }
+      .small { font-size: 13px; }
+      .label { font-size: 13.5px; }
+      .mono { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 13px; font-weight: 700; }
+      .wlabel { font-size: 18px; font-weight: 700; }
+      .light { fill: #FFFFFF; }
+      .frame { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .box { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .soft { fill: #F6F8FA; stroke: #1F2328; stroke-width: 1.5; }
+      .state { fill: #F6F8FA; stroke: #1F2328; stroke-width: 2; }
+      .state-red { fill: #FFFFFF; stroke: #8B0A1F; stroke-width: 2.5; }
+      .guard { fill: #FFFFFF; stroke: #8B0A1F; stroke-width: 2; }
+      .deferred { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 6 5; }
+      .screen { fill: #FFFFFF; stroke: #1F2328; stroke-width: 2; }
+      .w-light { fill: #D0D7DE; stroke: #1F2328; stroke-width: 1.2; }
+      .w-white { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.2; }
+      .w-dark { fill: #1F2328; stroke: #1F2328; stroke-width: 1.2; }
+      .w-red { fill: #8B0A1F; stroke: #1F2328; stroke-width: 1.2; }
+      .w-behind { fill: #F6F8FA; stroke: #8C959F; stroke-width: 1.2; stroke-dasharray: 5 4; }
+      .flow { stroke: #1F2328; stroke-width: 1.8; fill: none; }
+      .flow-red { stroke: #8B0A1F; stroke-width: 2; fill: none; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#1F2328"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#8B0A1F"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="1560" fill="#FFFFFF"/>
+  <text class="title" x="30" y="46">Crimson WM · F7: pantalla completa (_NET_WM_STATE_FULLSCREEN)</text>
+  <text class="muted" x="30" y="74">Diagrama técnico del código de F7 (ADR 0009). No es una captura: la captura real está en crimson-wm-f7-comparison.png.</text>
+
+  <!-- 1. Estados -->
+  <rect class="frame" x="30" y="92" width="1340" height="300" rx="8"/>
+  <text class="h" x="48" y="122">1 · Estado y transiciones (Client.fullscreen, única fuente de verdad)</text>
+  <rect class="state" x="60" y="150" width="330" height="130" rx="10"/>
+  <text class="h" x="225" y="186" text-anchor="middle">Normal</text>
+  <text class="small" x="225" y="212" text-anchor="middle">en mosaico o flotante</text>
+  <text class="small muted" x="225" y="234" text-anchor="middle">_NET_WM_STATE sin FULLSCREEN</text>
+  <rect class="state-red" x="1010" y="150" width="330" height="130" rx="10"/>
+  <text class="h accent" x="1175" y="186" text-anchor="middle">Pantalla completa</text>
+  <text class="small" x="1175" y="212" text-anchor="middle">área completa, borde 0</text>
+  <text class="small muted" x="1175" y="234" text-anchor="middle">_NET_WM_STATE con FULLSCREEN</text>
+  <line class="flow" x1="392" y1="190" x2="1006" y2="190" marker-end="url(#arrow)"/>
+  <text class="label" x="700" y="168" text-anchor="middle">entrar: Mod4+f · ADD o TOGGLE · _NET_WM_STATE antes del mapeo · adopción</text>
+  <line class="flow" x1="1008" y1="244" x2="394" y2="244" marker-end="url(#arrow)"/>
+  <text class="label" x="700" y="270" text-anchor="middle">salir: Mod4+f · REMOVE o TOGGLE · otra ocupa su escritorio · salida normal</text>
+  <text class="small muted" x="700" y="222" text-anchor="middle">idempotente: añadir lo que ya está o quitar lo que no está no cambia nada</text>
+  <text class="h2" x="60" y="316">En mosaico</text>
+  <text class="small" x="250" y="316">no se guarda nada: sale del cálculo master-stack y, al salir, Clients::plan le devuelve su hueco por su posición en la lista.</text>
+  <text class="h2" x="60" y="340">Flotante</text>
+  <text class="small" x="250" y="340">al entrar guarda su marco real (GetGeometry: x, y, ancho, alto y borde) y al salir lo restaura exactamente.</text>
+  <text class="h2" x="60" y="364">A pantalla completa</text>
+  <text class="small" x="250" y="364">el área de la pantalla y borde 0; ConfigureRequest denegada con un ConfigureNotify sintético del área.</text>
+
+  <!-- 2. Ejemplo en mosaico -->
+  <rect class="frame" x="30" y="410" width="1340" height="300" rx="8"/>
+  <text class="h" x="48" y="440">2 · En mosaico: sale del cálculo y recupera su hueco</text>
+  <rect class="screen" x="70" y="466" width="360" height="202"/>
+  <text class="small" x="250" y="694" text-anchor="middle">Antes: A maestra; B y C en la pila</text>
+  <rect class="screen" x="520" y="466" width="360" height="202"/>
+  <text class="small" x="700" y="694" text-anchor="middle">Mod4+f: B ocupa el área (A y C, detrás)</text>
+  <rect class="screen" x="970" y="466" width="360" height="202"/>
+  <text class="small" x="1150" y="694" text-anchor="middle">Mod4+f de nuevo: mismo orden y geometría</text>
+  <rect class="w-white" x="70" y="466" width="180" height="202"/>
+  <text class="wlabel" x="160" y="574" text-anchor="middle">A</text>
+  <rect class="w-dark" x="250" y="466" width="180" height="101"/>
+  <text class="wlabel light" x="340" y="523" text-anchor="middle">B</text>
+  <rect class="w-light" x="250" y="567" width="180" height="101"/>
+  <text class="wlabel" x="340" y="624" text-anchor="middle">C</text>
+  <rect class="w-behind" x="520" y="466" width="180" height="202"/>
+  <text class="wlabel" x="610" y="574" text-anchor="middle"></text>
+  <rect class="w-behind" x="700" y="466" width="180" height="202"/>
+  <text class="wlabel" x="790" y="574" text-anchor="middle"></text>
+  <rect class="w-dark" x="526" y="472" width="348" height="190"/>
+  <text class="wlabel light" x="700" y="574" text-anchor="middle">B</text>
+  <rect class="w-white" x="970" y="466" width="180" height="202"/>
+  <text class="wlabel" x="1060" y="574" text-anchor="middle">A</text>
+  <rect class="w-dark" x="1150" y="466" width="180" height="101"/>
+  <text class="wlabel light" x="1240" y="523" text-anchor="middle">B</text>
+  <rect class="w-light" x="1150" y="567" width="180" height="101"/>
+  <text class="wlabel" x="1240" y="624" text-anchor="middle">C</text>
+  <line class="flow-red" x1="438" y1="567" x2="512" y2="567" marker-end="url(#arrow-red)"/>
+  <line class="flow" x1="888" y1="567" x2="962" y2="567" marker-end="url(#arrow)"/>
+
+  <!-- 3. Pila, foco y escritorios -->
+  <rect class="frame" x="30" y="728" width="662" height="270" rx="8"/>
+  <text class="h" x="48" y="758">3 · Pila, foco y escritorios</text>
+  <text class="small" x="48" y="788">Con el foco: encima de todo, también de las flotantes.</text>
+  <text class="small" x="48" y="813">Si se enfoca otra de su escritorio (Mod4+j/k, un diálogo</text>
+  <text class="small" x="48" y="838">nuevo, _NET_ACTIVE_WINDOW): baja al fondo y la enfocada</text>
+  <text class="small" x="48" y="863">queda visible. Al recuperar el foco, vuelve a subir.</text>
+  <text class="small" x="48" y="888">Como mucho una por escritorio: la última petición gana,</text>
+  <text class="small" x="48" y="913">también al mover una ventana a otro escritorio.</text>
+  <text class="small" x="48" y="938">El estado es de la ventana: se oculta y se muestra con</text>
+  <text class="small" x="48" y="963">su escritorio, sin cambiar el foco ni el escritorio activo.</text>
+  <rect class="frame" x="708" y="728" width="662" height="270" rx="8"/>
+  <text class="h" x="726" y="758">4 · Peticiones _NET_WM_STATE (EWMH)</text>
+  <text class="mono" x="726" y="788">data[0]</text>
+  <text class="small" x="860" y="788">0 REMOVE · 1 ADD · 2 TOGGLE; otra acción, rechazada.</text>
+  <text class="mono" x="726" y="816">data[1/2]</text>
+  <text class="small" x="860" y="816">solo cuenta _NET_WM_STATE_FULLSCREEN.</text>
+  <text class="mono" x="726" y="844">Otros</text>
+  <text class="small" x="860" y="844">MAXIMIZED, ABOVE, STICKY…: ni se aplican ni se añaden.</text>
+  <text class="mono" x="726" y="872">Ajenos</text>
+  <text class="small" x="860" y="872">los que puso el cliente se conservan en su orden:</text>
+  <text class="small" x="860" y="900">el WM solo quita o añade FULLSCREEN (lectura y escritura).</text>
+  <text class="mono" x="726" y="928">Ocultas</text>
+  <text class="small" x="860" y="928">se aceptan sin cambiar de escritorio ni robar el foco.</text>
+  <text class="mono" x="726" y="956">Validación</text>
+  <text class="small" x="860" y="956">formato 32, ventana gestionada y origen 0, 1 o 2.</text>
+
+  <!-- 5. Salida y recuperación -->
+  <rect class="guard" x="30" y="1016" width="1340" height="196" rx="8"/>
+  <text class="h accent" x="48" y="1046">5 · Salida y recuperación</text>
+  <text class="small" x="48" y="1076">Salida normal (Mod4+Shift+Escape o SelectionClear): todas las ventanas a pantalla completa, de todos los escritorios,</text>
+  <text class="small" x="48" y="1098">vuelven a su hueco o a su marco y pierden FULLSCREEN antes de limpiar la identificación EWMH (ADR 0008).</text>
+  <text class="small" x="48" y="1120">SIGTERM o SIGKILL: no hay restauración. Quedan el área y FULLSCREEN; el save-set vuelve a mostrar las ocultas.</text>
+  <text class="small" x="48" y="1142">El siguiente arranque en ese servidor se rechaza (código 12, fail-closed) hasta borrar a mano _NET_SUPPORTING_WM_CHECK.</text>
+  <text class="small" x="48" y="1164">Después, la adopción respeta FULLSCREEN (si hay varias, gana la más alta de la pila). Una flotante cuyo marco</text>
+  <text class="small" x="48" y="1186">se desconoce sale a uno de respaldo: centrado y con dos tercios del área. Su geometría original no se recupera.</text>
+
+  <!-- 6. Aplazado -->
+  <rect class="deferred" x="30" y="1230" width="1340" height="170" rx="8"/>
+  <text class="h muted" x="48" y="1260">Aplazado: no implementado ni declarado en _NET_SUPPORTED</text>
+  <text class="small muted" x="48" y="1290">– maximizar (_NET_WM_STATE_MAXIMIZED_VERT/HORZ) y otros estados (ABOVE, BELOW, STICKY, HIDDEN, DEMANDS_ATTENTION)</text>
+  <text class="small muted" x="48" y="1316">– paneles: _NET_WORKAREA y _NET_WM_STRUT_PARTIAL; la pantalla completa ocupa siempre la pantalla entera</text>
+  <text class="small muted" x="48" y="1342">– varios monitores (RandR) y _NET_WM_FULLSCREEN_MONITORS · decoraciones · animaciones</text>
+  <text class="small muted" x="48" y="1368">– restauración tras SIGTERM o SIGKILL (no hay manejadores de señales)</text>
+
+  <!-- Leyenda -->
+  <line class="flow" x1="48" y1="1438" x2="108" y2="1438" marker-end="url(#arrow)"/>
+  <text class="small" x="118" y="1443">transición o paso</text>
+  <line class="flow-red" x1="268" y1="1438" x2="328" y2="1438" marker-end="url(#arrow-red)"/>
+  <text class="small accent" x="338" y="1443">entrar en pantalla completa</text>
+  <rect class="w-behind" x="560" y="1428" width="60" height="20"/>
+  <text class="small muted" x="630" y="1443">ventana detrás</text>
+  <rect class="deferred" x="770" y="1428" width="60" height="20" rx="3"/>
+  <text class="small muted" x="840" y="1443">aplazado</text>
+  <text class="small muted" x="1370" y="1443" text-anchor="end">Fuente: src/wm.rs, src/clients.rs, src/workspaces.rs, src/ewmh.rs</text>
+  <text class="small" x="48" y="1490">Capturas reales del mismo comportamiento, en Xvfb: docs/images/crimson-wm-f7-comparison.png (A74).</text>
+  <text class="small muted" x="48" y="1514">Paleta de las ventanas de ejemplo como en la captura: blanco, negro y gris; el rojo marca la entrada en pantalla completa.</text>
+</svg>

@@ -63,11 +63,14 @@ for b in "$BIN" "$TEST_CLIENT"; do
     fi
 done
 BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")
-# Cada binario se compara con sus fuentes: el WM no depende de examples/.
+# Cada binario se compara con sus fuentes: el WM con src/ y el cliente de
+# prueba con examples/ (no depende de src/, y Cargo no lo vuelve a enlazar
+# cuando solo cambia src/).
 for b in "$BIN" "$TEST_CLIENT"; do
-    sources=("$ROOT/src" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock")
+    sources=("$ROOT/Cargo.toml" "$ROOT/Cargo.lock")
     if [[ $b == "$BIN" ]]; then
         (($#)) && continue
+        sources+=("$ROOT/src")
     else
         sources+=("$ROOT/examples")
     fi

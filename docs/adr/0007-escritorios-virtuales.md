@@ -12,6 +12,10 @@
   tras SIGTERM comprueba primero el rechazo por la propiedad obsoleta
   (`A51-tras-sigterm`) y el arnés la borra antes de seguir. Las secciones
   afectadas lo indican.
+- **Actualización F7 (2026-10-14):** cada escritorio puede tener una
+  ventana a pantalla completa; el estado viaja con la ventana al moverla y
+  la última gana en el destino (ADR 0009). La salida normal restaura antes
+  las geometrías de todas ellas.
 
 ## Contexto
 

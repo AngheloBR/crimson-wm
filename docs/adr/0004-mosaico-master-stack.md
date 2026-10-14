@@ -14,6 +14,11 @@
   publica `_NET_CLIENT_LIST` y `_NET_CLIENT_LIST_STACKING`. Entre los tipos
   de ventana solo declara los que tienen un tratamiento propio (normal,
   diálogo, utilidad y barra de herramientas; ADR 0008).
+- **Actualización F7 (2026-10-14):** la geometría que coloca el WM sale de
+  `Clients::plan`: el master-stack de las ventanas que no están a pantalla
+  completa, más el área completa para la que lo está, que conserva su
+  posición en la lista (ADR 0009). *La «pantalla completa» que se cita
+  abajo como no atendida está resuelta.*
 
 ## Contexto
 

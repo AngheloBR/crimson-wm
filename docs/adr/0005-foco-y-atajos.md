@@ -19,6 +19,10 @@
   cambios de `WM_HINTS` y `WM_PROTOCOLS` se siguen con `PropertyNotify`.
   `Mod4+w` y `Mod4+Shift+w` dejan de estar reservados: cierran ventanas. Se
   atienden las peticiones `_NET_ACTIVE_WINDOW` (ADR 0008).
+- **Actualización F7 (2026-10-14):** `Mod4+f`, obligatorio, alterna la
+  pantalla completa. Cada decisión de foco recoloca en la pila la ventana a
+  pantalla completa del escritorio: arriba si tiene el foco y al fondo si
+  no (ADR 0009).
 
 ## Contexto
 
