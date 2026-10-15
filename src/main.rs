@@ -13,6 +13,7 @@ mod ewmh;
 mod icccm;
 mod keys;
 mod layout;
+mod rules;
 mod safeguards;
 mod spawn;
 mod wm;
@@ -58,6 +59,24 @@ fn run() -> Result<(), Fatal> {
     // Capa 1, antes de abrir ninguna conexión. DISPLAY se lee una sola vez.
     let target = display::validate(std::env::var_os("DISPLAY"))?;
     let token = safeguards::sandbox_token(std::env::var_os(safeguards::TOKEN_VAR))?;
+    // Reglas de ventanas (ADR 0013): se leen una vez, antes de conectar. Una
+    // fuente inválida se descarta entera; no detiene el WM ni relaja ninguna
+    // salvaguarda.
+    let window_rules = match rules::load(std::env::var_os(rules::RULES_VAR)) {
+        Ok(list) => {
+            if !list.is_empty() {
+                eprintln!("crimson-wm: {}: {} reglas", rules::RULES_VAR, list.len());
+            }
+            list
+        }
+        Err(error) => {
+            eprintln!(
+                "crimson-wm: {} inválida ({error}): se continúa sin reglas",
+                rules::RULES_VAR
+            );
+            Vec::new()
+        }
+    };
 
     let conn = connect::connect(&target)?;
     let setup = conn.setup();
@@ -84,5 +103,5 @@ fn run() -> Result<(), Fatal> {
         screen.root
     );
 
-    wm::run(&conn, screen, &target)
+    wm::run(&conn, screen, &target, window_rules)
 }

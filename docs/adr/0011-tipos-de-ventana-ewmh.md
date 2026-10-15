@@ -10,6 +10,10 @@
   `FixedKind::layer` mantiene las mismas capas. Solo los `Dock` reservan
   espacio con sus struts. *La limitación «el `DOCK` no reserva espacio»
   está resuelta (ADR 0012); los demás pendientes siguen igual.*
+- **Actualización F11 (2026-10-14):** las reglas de ventanas no se aplican
+  a las fijas (`DOCK`, `NOTIFICATION` y `DESKTOP`) ni a las
+  override-redirect, y una regla no puede dar la pantalla completa a un
+  tipo que no la admite (ADR 0013).
 
 ![Captura real en Xvfb: con F8, una ventana DESKTOP tapa el mosaico; con F9, queda al fondo con el DOCK encima; y en el escritorio 2 el DOCK sigue visible y un menú conserva su posición](../images/crimson-wm-f9-comparison.png)
 

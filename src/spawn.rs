@@ -5,8 +5,8 @@
 //!
 //! El entorno de los hijos es el del WM con tres cambios, aplicados solo al
 //! `Command` (el del WM no se modifica): `DISPLAY` se fija al display
-//! validado y se eliminan el token del sandbox (ADR 0003), `WINDOWID` y
-//! `DESKTOP_STARTUP_ID`.
+//! validado y se eliminan el token del sandbox (ADR 0003), `WINDOWID`,
+//! `DESKTOP_STARTUP_ID` y las reglas del WM (`CRIMSON_RULES`, ADR 0013).
 
 use std::io;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use crate::display::Target;
+use crate::rules::RULES_VAR;
 use crate::safeguards::TOKEN_VAR;
 
 /// Programa de un atajo de lanzamiento.
@@ -66,9 +67,9 @@ pub const PROGRAMS: &[Program] = &[
     },
 ];
 
-/// Variables que no pasan a los hijos: el token del sandbox y las que
-/// describen desde dónde se lanzó el WM, no al hijo.
-const REMOVED_VARS: [&str; 3] = [TOKEN_VAR, "WINDOWID", "DESKTOP_STARTUP_ID"];
+/// Variables que no pasan a los hijos: el token del sandbox, las que
+/// describen desde dónde se lanzó el WM, no al hijo, y las reglas del WM.
+const REMOVED_VARS: [&str; 4] = [TOKEN_VAR, "WINDOWID", "DESKTOP_STARTUP_ID", RULES_VAR];
 /// Máximo de lanzamientos supervisados a la vez. Cuenta los hijos directos,
 /// no sus descendientes.
 const MAX_LIVE: usize = 64;
@@ -271,7 +272,7 @@ mod tests {
     fn entorno_del_hijo() {
         let terminal = command(&PROGRAMS[TERMINAL], ":7.1", Path::new("/")).unwrap();
         let envs = envs(&terminal);
-        for var in [TOKEN_VAR, "WINDOWID", "DESKTOP_STARTUP_ID"] {
+        for var in [TOKEN_VAR, "WINDOWID", "DESKTOP_STARTUP_ID", RULES_VAR] {
             assert!(
                 envs.contains(&(OsStr::new(var), None)),
                 "{var} no se elimina"
@@ -279,7 +280,7 @@ mod tests {
         }
         assert!(envs.contains(&(OsStr::new("DISPLAY"), Some(OsStr::new(":7.1")))));
         // XAUTHORITY, PATH, HOME y el resto se heredan sin cambios.
-        assert_eq!(envs.len(), 4);
+        assert_eq!(envs.len(), 5);
         assert_eq!(terminal.get_current_dir(), Some(Path::new("/")));
     }
 

@@ -46,7 +46,7 @@ source "$F"/binaries.sh
 ensure_binaries "$ROOT" 0 "${1:-}" || exit 2
 
 # Nada de lo que se ejecute aquí debe heredar el acceso a la sesión real.
-unset DISPLAY XAUTHORITY CRIMSON_SANDBOX_TOKEN
+unset DISPLAY XAUTHORITY CRIMSON_SANDBOX_TOKEN CRIMSON_RULES
 
 OUT=$(mktemp -d -t crimson-f1.XXXXXX) || exit 2
 # shellcheck source=lib.sh

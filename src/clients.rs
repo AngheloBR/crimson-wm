@@ -5,7 +5,7 @@
 use x11rb::protocol::xproto::Window;
 
 use crate::ewmh::WindowType;
-use crate::icccm::Protocols;
+use crate::icccm::{Protocols, WmClass};
 use crate::layout::{self, Rect};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -437,6 +437,9 @@ pub struct WindowInfo {
     /// `_NET_WM_STATE` contiene `_NET_WM_STATE_FULLSCREEN`: la ventana pide
     /// empezar a pantalla completa (ADR 0009). No afecta a la clasificación.
     pub fullscreen: bool,
+    /// `WM_CLASS` válida (ADR 0013); `None` si falta o es defectuosa. Solo la
+    /// usan las reglas, no la clasificación.
+    pub wm_class: Option<WmClass>,
 }
 
 /// Capa de una ventana fija (ADR 0011).

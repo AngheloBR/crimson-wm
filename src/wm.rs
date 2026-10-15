@@ -41,6 +41,12 @@
 //! los diálogos y el marco de respaldo usan `work`; la pantalla completa,
 //! `screen`. `work` se recalcula cuando cambian las reservas
 //! (`update_work_area`) y se publica en `_NET_WORKAREA`.
+//!
+//! Reglas de ventanas (ADR 0013): al gestionar una ventana de escritorio en
+//! su `MapRequest`, después de clasificarla, `rules::evaluate` decide con su
+//! `WM_CLASS`, su tipo y `WM_TRANSIENT_FOR` si va a otro escritorio, si se
+//! hace flotante, si no recibe el foco y si empieza a pantalla completa. Las
+//! adoptadas al arrancar, las fijas y las override-redirect no las usan.
 
 use std::collections::VecDeque;
 
@@ -69,6 +75,7 @@ use crate::ewmh::{
 use crate::icccm::{self, ICONIC_STATE, NORMAL_STATE, ProtocolAtoms, Protocols, TransientFor};
 use crate::keys::{self, Action, Repeats};
 use crate::layout::{self, Rect};
+use crate::rules::{self, Rule};
 use crate::safeguards;
 use crate::spawn::Launcher;
 use crate::workspaces::{self, Switch, Workspaces};
@@ -112,7 +119,15 @@ const POINTER_ROOT: Window = 1;
 ///
 /// `target` es el display validado por la capa 1: los programas lanzados
 /// reciben ese `DISPLAY`.
-pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(), Fatal> {
+///
+/// `window_rules`: las reglas ya validadas de `CRIMSON_RULES` (ADR 0013),
+/// posiblemente ninguna.
+pub fn run(
+    conn: &impl Connection,
+    screen: &Screen,
+    target: &Target,
+    window_rules: Vec<Rule>,
+) -> Result<(), Fatal> {
     let bindings = keys::grab_bindings(conn, screen.root)?;
     let launcher = Launcher::new(target);
     let atoms = Atoms::new(conn)
@@ -138,6 +153,7 @@ pub fn run(conn: &impl Connection, screen: &Screen, target: &Target) -> Result<(
         root: screen.root,
         screen: physical,
         work: physical,
+        rules: window_rules,
         types,
         atoms,
         workspaces: Workspaces::default(),
@@ -305,6 +321,8 @@ struct Wm<'c, C: Connection> {
     /// los paneles. Se deriva de `Workspaces::insets` en `update_work_area`
     /// y solo se guarda para saber cuándo cambia.
     work: Rect,
+    /// Reglas de ventanas (ADR 0013), leídas una vez al arrancar.
+    rules: Vec<Rule>,
     atoms: Atoms,
     /// Átomos de los tipos de `_NET_WM_WINDOW_TYPE` (ADR 0011).
     types: TypeAtoms,
@@ -731,10 +749,29 @@ impl<C: Connection> Wm<'_, C> {
                 // se mapea sin gestionarla, como antes de F9.
                 Disposition::Unmanaged => None,
             };
-            if let Some(class) = class {
+            if let Some(mut class) = class {
+                // Reglas (ADR 0013), después de la clasificación.
+                let decision = self.decide(window, &info);
+                if decision.floating.is_some() && class.kind == Kind::Tiled {
+                    class.kind = Kind::Floating;
+                }
+                let initial_focus = decision.nofocus.is_none();
                 self.manage(window, class)?;
                 self.log_relation(window, info.transient);
-                let hidden = self.place_with_owner(window)?;
+                let mut hidden = self.place_with_owner(window)?;
+                if let Some((desk, line)) = decision.desktop {
+                    if let Some(owner) = self.workspaces.owner_of(window) {
+                        // Un diálogo sigue a su principal (ADR 0010).
+                        eprintln!(
+                            "crimson-wm: ventana 0x{window:x}: escritorio {} de la regla de la línea {line} ignorado: diálogo de 0x{owner:x}",
+                            desk + 1
+                        );
+                    } else {
+                        let focus_there = class.focusable && initial_focus;
+                        let origin = format!("regla de la línea {line}");
+                        hidden = self.place_on(window, desk, focus_there, &origin)?;
+                    }
+                }
                 // Diálogos y demás flotantes con foco; nunca los menús ni
                 // las emergentes, que conservan su posición (ADR 0011).
                 if class.centers {
@@ -744,16 +781,22 @@ impl<C: Connection> Wm<'_, C> {
                     // Pedida antes del mapeo (EWMH): ya aparece a pantalla
                     // completa.
                     self.set_fullscreen(window, true, "estado inicial", false)?;
+                } else if let Some(line) = decision.fullscreen {
+                    let origin = format!("regla de la línea {line}");
+                    self.set_fullscreen(window, true, &origin, false)?;
                 }
                 if hidden {
-                    // Oculta con su principal: no se mapea ni recibe el foco.
+                    // Oculta en otro escritorio (con su principal o por una
+                    // regla): no se mapea ni recibe el foco.
                     return Ok(());
                 }
                 // Se coloca antes de mapearla para que aparezca ya con su
                 // tamaño y en su sitio de la pila (los diálogos, encima de su
                 // principal).
                 self.arrange()?;
-                focus = class.focusable;
+                // `nofocus` solo evita el foco inicial: la ventana sigue
+                // admitiéndolo después (ADR 0013).
+                focus = class.focusable && initial_focus;
             }
         }
         // Las flotantes quedan encima al mapearse: una ventana recién creada
@@ -1015,26 +1058,91 @@ impl<C: Connection> Wm<'_, C> {
     /// como la más reciente de su historial, sin cambiar el escritorio
     /// activo ni el foco. Devuelve `true` si queda oculto.
     fn place_with_owner(&mut self, window: Window) -> Result<bool, Fatal> {
-        let current = self.workspaces.index();
         let Some(desk) = self
             .workspaces
             .owner_of(window)
             .and_then(|o| self.workspaces.locate(o))
-            .filter(|&d| d != current)
         else {
             return Ok(false);
         };
-        if self.workspaces.move_window(window, desk, true).is_none() {
+        self.place_on(window, desk, true, "con su principal")
+    }
+
+    /// Lleva una ventana recién gestionada (aún sin mapear) a `desk`, si no
+    /// es el activo: queda oculta allí, en IconicState y con su
+    /// `_NET_WM_DESKTOP`, sin cambiar el escritorio activo ni el foco. Con
+    /// `focus`, pasa a ser la más reciente del historial de ese escritorio.
+    /// Lo usan los diálogos (ADR 0010) y las reglas (ADR 0013). Devuelve
+    /// `true` si queda oculta.
+    fn place_on(
+        &mut self,
+        window: Window,
+        desk: usize,
+        focus: bool,
+        origin: &str,
+    ) -> Result<bool, Fatal> {
+        if desk == self.workspaces.index() {
+            return Ok(false);
+        }
+        if self.workspaces.move_window(window, desk, focus).is_none() {
             return Ok(false);
         }
         self.publish_desktop(window, desk)?;
         self.set_wm_state(window, ICONIC_STATE)?;
         self.dirty.stacking = true;
         eprintln!(
-            "crimson-wm: ventana 0x{window:x} al escritorio {} con su principal (oculta)",
+            "crimson-wm: ventana 0x{window:x} al escritorio {} {origin} (oculta)",
             desk + 1
         );
         Ok(true)
+    }
+
+    /// Evalúa las reglas para una ventana de escritorio recién clasificada y
+    /// registra lo que deciden (ADR 0013). Sin reglas, decisión vacía y
+    /// ningún registro.
+    fn decide(&self, window: Window, info: &WindowInfo) -> rules::Decision {
+        if self.rules.is_empty() {
+            return rules::Decision::default();
+        }
+        let window_type = info.window_type.unwrap_or(if info.transient {
+            WindowType::Dialog
+        } else {
+            WindowType::Normal
+        });
+        let subject = rules::Subject {
+            wm_class: info.wm_class.as_ref(),
+            window_type,
+            transient: info.transient,
+        };
+        let decision = rules::evaluate(&self.rules, &subject);
+        if decision.is_empty() {
+            return decision;
+        }
+        let mut parts = Vec::new();
+        if let Some((desk, line)) = decision.desktop {
+            parts.push(format!("escritorio {} (línea {line})", desk + 1));
+        }
+        if let Some(line) = decision.floating {
+            parts.push(format!("flotante (línea {line})"));
+        }
+        if let Some(line) = decision.nofocus {
+            parts.push(format!("sin foco inicial (línea {line})"));
+        }
+        if let Some(line) = decision.fullscreen {
+            parts.push(format!("pantalla completa (línea {line})"));
+        }
+        eprintln!(
+            "crimson-wm: ventana 0x{window:x}: reglas de las líneas {:?}: {}",
+            decision.matched,
+            parts.join(", ")
+        );
+        for (line, desk) in &decision.ignored {
+            eprintln!(
+                "crimson-wm: ventana 0x{window:x}: escritorio {} de la regla de la línea {line} ignorado: ya lo fija una regla anterior",
+                desk + 1
+            );
+        }
+        decision
     }
 
     /// Centra un diálogo flotante recién gestionado sobre la geometría real
@@ -2298,7 +2406,7 @@ impl<C: Connection> Wm<'_, C> {
         Ok(())
     }
 
-    /// Lee lo necesario para clasificar una ventana, con las seis
+    /// Lee lo necesario para clasificar una ventana, con las siete
     /// peticiones enviadas juntas. `None`: la ventana ya no existe.
     ///
     /// Todas las propiedades se leen sin interpretar y se analizan aquí: un
@@ -2331,6 +2439,13 @@ impl<C: Connection> Wm<'_, C> {
             AtomEnum::ANY,
             ewmh::MAX_STATE_ATOMS,
         )?;
+        // WM_CLASS (ADR 0013): cualquier tipo, para distinguir una propiedad
+        // defectuosa de una ausente; acotada a icccm::WM_CLASS_LEN.
+        let class = property(
+            AtomEnum::WM_CLASS.into(),
+            AtomEnum::ANY,
+            icccm::WM_CLASS_LEN,
+        )?;
 
         let attributes = reply_or_gone(attributes.reply(), window, "GetWindowAttributes")?;
         let transient = reply_or_gone(transient.reply(), window, "GetProperty(WM_TRANSIENT_FOR)")?;
@@ -2338,6 +2453,7 @@ impl<C: Connection> Wm<'_, C> {
         let hints = reply_or_gone(hints.reply(), window, "GetProperty(WM_HINTS)")?;
         let protocols = reply_or_gone(protocols.reply(), window, "GetProperty(WM_PROTOCOLS)")?;
         let states = reply_or_gone(states.reply(), window, "GetProperty(_NET_WM_STATE)")?;
+        let class = reply_or_gone(class.reply(), window, "GetProperty(WM_CLASS)")?;
         let (
             Some(attributes),
             Some(transient),
@@ -2345,7 +2461,10 @@ impl<C: Connection> Wm<'_, C> {
             Some(hints),
             Some(protocols),
             Some(states),
-        ) = (attributes, transient, types, hints, protocols, states)
+            Some(class),
+        ) = (
+            attributes, transient, types, hints, protocols, states, class,
+        )
         else {
             return Ok(None);
         };
@@ -2370,6 +2489,21 @@ impl<C: Connection> Wm<'_, C> {
                         "crimson-wm: _NET_WM_STATE de 0x{window:x} no se interpreta ({error:?}): sin pantalla completa inicial"
                     );
                     false
+                }
+            },
+            wm_class: match icccm::wm_class(
+                class.type_,
+                class.format,
+                class.bytes_after,
+                &class.value,
+                AtomEnum::STRING.into(),
+            ) {
+                Ok(wm_class) => wm_class,
+                Err(error) => {
+                    eprintln!(
+                        "crimson-wm: WM_CLASS de 0x{window:x} no se interpreta ({error:?}): sin clase"
+                    );
+                    None
                 }
             },
         };

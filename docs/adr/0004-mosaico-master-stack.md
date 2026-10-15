@@ -38,6 +38,10 @@
   se calcula sobre ella. Al cambiar las reservas, el escritorio activo se
   reorganiza al momento y los ocultos al mostrarse; las flotantes no se
   mueven (ADR 0012).
+- **Actualización F11 (2026-10-14):** después de `clients::classify`, una
+  regla de `CRIMSON_RULES` puede pasar una ventana de mosaico a flotante;
+  nunca al revés. La clasificación no cambia y, sin reglas, todo sigue
+  como en F10 (ADR 0013).
 
 ## Contexto
 

@@ -1,5 +1,5 @@
-//! ICCCM (ADR 0008 y 0010): interpretación de `WM_HINTS`, `WM_PROTOCOLS`,
-//! `WM_TRANSIENT_FOR` y `WM_NORMAL_HINTS`, mensajes `WM_PROTOCOLS`
+//! ICCCM (ADR 0008, 0010 y 0013): interpretación de `WM_HINTS`,
+//! `WM_PROTOCOLS`, `WM_TRANSIENT_FOR`, `WM_NORMAL_HINTS` y `WM_CLASS`, mensajes `WM_PROTOCOLS`
 //! (`WM_DELETE_WINDOW` y `WM_TAKE_FOCUS`) y valor de `WM_STATE`. Sin E/S:
 //! `wm.rs` lee las propiedades y envía los mensajes.
 
@@ -115,6 +115,62 @@ pub fn explicit_position(normal_hints: &[u32]) -> bool {
         .is_some_and(|flags| flags & (US_POSITION | P_POSITION) != 0)
 }
 
+/// Longitud máxima de `WM_CLASS` que se lee, en unidades de 32 bits (512
+/// bytes). Una propiedad mayor se rechaza entera (ADR 0013).
+pub const WM_CLASS_LEN: u32 = 128;
+
+/// `WM_CLASS` (ICCCM §4.1.2.5): nombre de instancia y de clase, con sus
+/// bytes originales (STRING es Latin-1; no se convierte a UTF-8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WmClass {
+    pub instance: Vec<u8>,
+    pub class: Vec<u8>,
+}
+
+/// Defecto de una propiedad `WM_CLASS` presente.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WmClassError {
+    /// No es `STRING` de formato 8.
+    Type { type_: Atom, format: u8 },
+    /// Más larga de lo que se lee: no se usa una parte.
+    TooLong { bytes_after: u32 },
+    /// No son exactamente dos cadenas separadas por NUL.
+    Structure { strings: usize },
+}
+
+/// Interpreta `WM_CLASS` leída con `AnyPropertyType`: `Ok(None)` si no
+/// existe. Deben ser exactamente dos cadenas terminadas en NUL; se admite
+/// que falte el NUL final. Las cadenas vacías son válidas (y nunca coinciden
+/// con una regla, que exige un valor).
+pub fn wm_class(
+    type_: Atom,
+    format: u8,
+    bytes_after: u32,
+    value: &[u8],
+    string: Atom,
+) -> Result<Option<WmClass>, WmClassError> {
+    if type_ == NONE {
+        return Ok(None);
+    }
+    if type_ != string || format != 8 {
+        return Err(WmClassError::Type { type_, format });
+    }
+    if bytes_after != 0 {
+        return Err(WmClassError::TooLong { bytes_after });
+    }
+    let value = value.strip_suffix(&[0]).unwrap_or(value);
+    let parts: Vec<&[u8]> = value.split(|&b| b == 0).collect();
+    match parts.as_slice() {
+        [instance, class] => Ok(Some(WmClass {
+            instance: instance.to_vec(),
+            class: class.to_vec(),
+        })),
+        _ => Err(WmClassError::Structure {
+            strings: parts.len(),
+        }),
+    }
+}
+
 /// Valor de `WM_STATE`: estado y ventana de icono (ninguna).
 pub fn wm_state(state: u32) -> [u32; 2] {
     [state, NONE]
@@ -220,6 +276,71 @@ mod tests {
         assert!(explicit_position(&[4]), "PPosition");
         assert!(!explicit_position(&[2 | 8]), "solo tamaños (USSize, PSize)");
         assert!(explicit_position(&[1 | 2 | 0x200]));
+    }
+
+    // U23: WM_CLASS.
+
+    #[test]
+    fn interpreta_wm_class() {
+        const STRING: Atom = 31;
+        let ok = |v: &[u8]| wm_class(STRING, 8, 0, v, STRING);
+        let wc = |i: &[u8], c: &[u8]| {
+            Ok(Some(WmClass {
+                instance: i.to_vec(),
+                class: c.to_vec(),
+            }))
+        };
+        assert_eq!(ok(b"navigator\0Firefox\0"), wc(b"navigator", b"Firefox"));
+        assert_eq!(
+            ok(b"navigator\0Firefox"),
+            wc(b"navigator", b"Firefox"),
+            "sin NUL final"
+        );
+        assert_eq!(ok(b"\0\0"), wc(b"", b""), "vacías");
+        assert_eq!(
+            ok(b"caf\xe9\0Caf\xe9\0"),
+            wc(b"caf\xe9", b"Caf\xe9"),
+            "Latin-1 intacto"
+        );
+        // Ausente.
+        assert_eq!(wm_class(NONE, 0, 0, b"", STRING), Ok(None));
+        // Estructura: una cadena, tres, o una con NUL final.
+        for (v, n) in [
+            (&b"solo"[..], 1),
+            (b"solo\0", 1),
+            (b"a\0b\0c\0", 3),
+            (b"", 1),
+        ] {
+            assert_eq!(ok(v), Err(WmClassError::Structure { strings: n }), "{v:?}");
+        }
+        // Tipo, formato y longitud.
+        assert_eq!(
+            wm_class(4, 32, 0, b"", STRING),
+            Err(WmClassError::Type {
+                type_: 4,
+                format: 32
+            })
+        );
+        assert_eq!(
+            wm_class(STRING, 32, 0, b"", STRING),
+            Err(WmClassError::Type {
+                type_: STRING,
+                format: 32
+            })
+        );
+        assert_eq!(
+            wm_class(STRING, 8, 7, b"a\0b\0", STRING),
+            Err(WmClassError::TooLong { bytes_after: 7 })
+        );
+        // Justo en el límite: 512 bytes leídos enteros (bytes_after 0) son
+        // válidos; solo bytes_after distinto de 0 indica una lectura
+        // truncada.
+        let mut full = vec![b'i'; 255];
+        full.push(0);
+        full.extend(std::iter::repeat_n(b'c', 255));
+        full.push(0);
+        assert_eq!(full.len(), 4 * WM_CLASS_LEN as usize);
+        assert_eq!(ok(&full).unwrap().unwrap().class.len(), 255);
     }
 
     #[test]

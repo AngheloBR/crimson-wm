@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="400" height="2718" viewBox="0 0 400 2718" role="img" aria-labelledby="title desc" xml:lang="es">
-  <title id="title">Crimson WM, fase F10: flujo implementado</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="2738" viewBox="0 0 400 2738" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F11: flujo implementado</title>
   <desc id="desc">Diagrama técnico basado en el código fuente; no es una captura
     ni una prueba de ejecución. El display :0 se rechaza siempre, lo que protege
     la sesión principal solo mientras esta use :0. En un entorno de prueba con
@@ -27,7 +27,9 @@
     todos los escritorios y sin foco. Desde F10 los DOCK reservan su borde
     con _NET_WM_STRUT_PARTIAL o _NET_WM_STRUT: el mosaico usa el área de
     trabajo resultante, publicada en _NET_WORKAREA, y la pantalla completa,
-    la pantalla física. Cada paso indica sus códigos de salida. Aparte se muestra una selección de funciones pendientes.
+    la pantalla física. Desde F11, unas reglas provisionales (CRIMSON_RULES)
+    deciden, por WM_CLASS, tipo y transitoriedad, el escritorio inicial, si
+    flota, si recibe el foco y si empieza a pantalla completa. Cada paso indica sus códigos de salida. Aparte se muestra una selección de funciones pendientes.
     Las salvaguardas reducen accidentes, pero no son una frontera de
     seguridad.</desc>
   <defs>
@@ -54,9 +56,9 @@
     </marker>
   </defs>
 
-  <rect width="400" height="2718" fill="#FFFFFF"/>
+  <rect width="400" height="2738" fill="#FFFFFF"/>
 
-  <text class="h" x="20" y="30">Crimson WM · fase F10</text>
+  <text class="h" x="20" y="30">Crimson WM · fase F11</text>
   <text class="muted" x="20" y="52">Diagrama técnico del código actual;</text>
   <text class="muted" x="20" y="72">no es una captura ni prueba de ejecución.</text>
 
@@ -71,7 +73,7 @@
 
   <!-- Entorno de prueba -->
   <g>
-    <rect class="boundary" x="8" y="204" width="384" height="2206" rx="8"/>
+    <rect class="boundary" x="8" y="204" width="384" height="2226" rx="8"/>
     <text class="h accent" x="20" y="228">Entorno de prueba (Xvfb)</text>
   </g>
 
@@ -97,7 +99,7 @@
 
   <!-- Proceso crimson-wm -->
   <g>
-    <rect class="proc" x="20" y="476" width="360" height="1706" rx="4"/>
+    <rect class="proc" x="20" y="476" width="360" height="1726" rx="4"/>
     <text class="h" x="32" y="500">Proceso crimson-wm</text>
 
     <text class="h" x="32" y="528">1 · Argumentos</text>
@@ -195,47 +197,48 @@
     <text class="muted" x="32" y="1990">principal, con ella; foco al cerrarlo</text>
     <text class="muted" x="32" y="2010">Fijas: DOCK, NOTIFICATION y DESKTOP;</text>
     <text class="muted" x="32" y="2030">los DOCK reservan borde (_NET_WORKAREA)</text>
-    <text class="muted" x="32" y="2050">Lanzamiento: un hilo lanza y espera</text>
-    <text class="muted" x="32" y="2070">Error X: se registra y se ignora</text>
-    <text class="muted" x="32" y="2090">Save-set: si el WM termina, el servidor</text>
-    <text class="muted" x="32" y="2110">vuelve a mapear las ventanas ocultas.</text>
-    <line class="sep" x1="32" y1="2124" x2="368" y2="2124"/>
+    <text class="muted" x="32" y="2050">Reglas (CRIMSON_RULES) al gestionarla</text>
+    <text class="muted" x="32" y="2070">Lanzamiento: un hilo lanza y espera</text>
+    <text class="muted" x="32" y="2090">Error X: se registra y se ignora</text>
+    <text class="muted" x="32" y="2110">Save-set: si el WM termina, el servidor</text>
+    <text class="muted" x="32" y="2130">vuelve a mapear las ventanas ocultas.</text>
+    <line class="sep" x1="32" y1="2144" x2="368" y2="2144"/>
 
-    <text class="b" x="32" y="2148">Pasos 5 a 10: conexión perdida, 13.</text>
-    <text class="b" x="32" y="2168">Pasos 5 a 9 y adopción: error X, 14.</text>
+    <text class="b" x="32" y="2168">Pasos 5 a 10: conexión perdida, 13.</text>
+    <text class="b" x="32" y="2188">Pasos 5 a 9 y adopción: error X, 14.</text>
   </g>
 
-  <line class="flow" x1="52" y1="2182" x2="52" y2="2214" marker-end="url(#arrow-end)"/>
-  <text class="muted" x="68" y="2203">lanza (argv, sin shell)</text>
+  <line class="flow" x1="52" y1="2202" x2="52" y2="2234" marker-end="url(#arrow-end)"/>
+  <text class="muted" x="68" y="2223">lanza (argv, sin shell)</text>
 
   <!-- Procesos hijos -->
   <g>
-    <rect class="box" x="20" y="2216" width="360" height="180" rx="4"/>
-    <text class="h" x="32" y="2240">Programas lanzados (hijos)</text>
-    <text x="32" y="2262">Grupo de procesos propio; stdin vacío</text>
-    <text x="32" y="2282">(/dev/null); stdout y stderr del WM.</text>
-    <text x="32" y="2302">Sin CRIMSON_SANDBOX_TOKEN, WINDOWID</text>
-    <text x="32" y="2322">ni DESKTOP_STARTUP_ID; DISPLAY = :N.S.</text>
-    <text x="32" y="2342">Hasta 64 supervisados; un fallo no</text>
-    <text x="32" y="2362">termina el WM. En las pruebas, solo</text>
-    <text x="32" y="2382">programas falsos (PATH aislado).</text>
+    <rect class="box" x="20" y="2236" width="360" height="180" rx="4"/>
+    <text class="h" x="32" y="2260">Programas lanzados (hijos)</text>
+    <text x="32" y="2282">Grupo de procesos propio; stdin vacío</text>
+    <text x="32" y="2302">(/dev/null); stdout y stderr del WM.</text>
+    <text x="32" y="2322">Sin el token, CRIMSON_RULES, WINDOWID</text>
+    <text x="32" y="2342">ni DESKTOP_STARTUP_ID; DISPLAY = :N.S.</text>
+    <text x="32" y="2362">Hasta 64 supervisados; un fallo no</text>
+    <text x="32" y="2382">termina el WM. En las pruebas, solo</text>
+    <text x="32" y="2402">programas falsos (PATH aislado).</text>
   </g>
 
   <!-- Pendiente -->
   <g>
-    <rect class="pending" x="8" y="2426" width="384" height="204" rx="6"/>
-    <text class="h muted" x="20" y="2450">Pendiente (selección)</text>
-    <text class="muted" x="20" y="2472">No es la hoja de ruta completa; fases</text>
-    <text class="muted" x="20" y="2492">y detalle en los ADR 0002 a 0012.</text>
-    <text class="muted" x="20" y="2516">– Pruebas también con Xephyr</text>
-    <text class="muted" x="20" y="2536">– Gestión limpia de señales</text>
-    <text class="muted" x="20" y="2556">– Configuración (config.toml)</text>
-    <text class="muted" x="20" y="2576">– Márgenes (gaps) y bordes</text>
-    <text class="muted" x="20" y="2596">– Extensiones RandR y XKB</text>
-    <text class="muted" x="20" y="2616">– _NET_WM_STATE_ABOVE/BELOW y sticky</text>
+    <rect class="pending" x="8" y="2446" width="384" height="204" rx="6"/>
+    <text class="h muted" x="20" y="2470">Pendiente (selección)</text>
+    <text class="muted" x="20" y="2492">No es la hoja de ruta completa; fases</text>
+    <text class="muted" x="20" y="2512">y detalle en los ADR 0002 a 0013.</text>
+    <text class="muted" x="20" y="2536">– Pruebas también con Xephyr</text>
+    <text class="muted" x="20" y="2556">– Gestión limpia de señales</text>
+    <text class="muted" x="20" y="2576">– Configuración (config.toml)</text>
+    <text class="muted" x="20" y="2596">– Márgenes (gaps) y bordes</text>
+    <text class="muted" x="20" y="2616">– Extensiones RandR y XKB</text>
+    <text class="muted" x="20" y="2636">– _NET_WM_STATE_ABOVE/BELOW y sticky</text>
   </g>
 
-  <text class="b accent" x="20" y="2658">Las salvaguardas reducen accidentes;</text>
-  <text class="b accent" x="20" y="2678">no son una frontera de seguridad</text>
-  <text class="b accent" x="20" y="2698">(ADR 0003).</text>
+  <text class="b accent" x="20" y="2678">Las salvaguardas reducen accidentes;</text>
+  <text class="b accent" x="20" y="2698">no son una frontera de seguridad</text>
+  <text class="b accent" x="20" y="2718">(ADR 0003).</text>
 </svg>

@@ -12,6 +12,9 @@
   ventana aparece en el escritorio activo al mapearse.
 - **Actualización F6 (2026-10-13):** `Repeats` filtra también la
   repetición automática de `Mod4+w` y `Mod4+Shift+w` (ADR 0008).
+- **Actualización F11 (2026-10-14):** `CRIMSON_RULES`, la fuente
+  provisional de reglas del WM, tampoco pasa a los programas lanzados
+  (`REMOVED_VARS`), como el token del sandbox (ADR 0013).
 
 ## Contexto
 

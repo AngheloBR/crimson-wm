@@ -15,8 +15,8 @@ ICCCM y EWMH (ver «Estado»).
 
 ## Estado
 
-Fase F10: struts y área de trabajo (`_NET_WM_STRUT`,
-`_NET_WM_STRUT_PARTIAL` y `_NET_WORKAREA`), sobre los tipos de ventana EWMH,
+Fase F11: reglas de ventanas (`CRIMSON_RULES`, provisional), sobre los
+struts y el área de trabajo, los tipos de ventana EWMH,
 las ventanas fijas y las capas de apilamiento, los diálogos y ventanas transitorias, la
 pantalla completa, la compatibilidad ICCCM/EWMH, los escritorios virtuales,
 el lanzamiento de aplicaciones, el foco por teclado y el mosaico
@@ -25,21 +25,25 @@ arranca en un servidor X de prueba que supere las salvaguardas del ADR
 0003, coloca las ventanas normales en mosaico, deja flotantes los diálogos
 y los mantiene con su ventana principal, deja paneles, avisos y fondos
 fijos en su capa y en todos los escritorios, deja que los paneles reserven
-su borde, gestiona el foco con el teclado,
+su borde, aplica reglas por `WM_CLASS`, tipo y transitoriedad, gestiona el
+foco con el teclado,
 reparte las ventanas en ocho escritorios, pone una ventana a pantalla
 completa, cierra ventanas, lanza seis programas fijos y termina con el
 atajo provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones,
-panel propio, varios monitores ni configuración.
+panel propio, varios monitores ni configuración (las reglas usan una
+variable de entorno provisional).
 
 Las cuatro capas de salvaguardas están implementadas desde P4
 (2026-10-11). Últimos resultados registrados, todos del 2026-10-14 en Xvfb
-sobre el binario de depuración de F10 (detalles y limitaciones en los ADR
-0003 a 0012):
+sobre el binario de depuración de F11 (detalles y limitaciones en los ADR
+0003 a 0013):
 
-- Pruebas unitarias U1–U22 (139 pruebas de `cargo test`): pasaron.
-- Aceptación de F10: A104–A119 pasaron y **A120 quedó parcial**, porque la
+- Pruebas unitarias U1–U23 (145 pruebas de `cargo test`): pasaron.
+- Aceptación de F11: A121–A134 pasaron y **A135 quedó parcial**, porque la
   consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
   programas falsos, nunca las aplicaciones reales.
+- Regresión de F10: A104–A119 pasaron y **A120 quedó parcial** por el
+  mismo motivo.
 - Regresión de F9: A88–A102 pasaron y **A103 quedó parcial** por el mismo
   motivo.
 - Regresión de F8: A76–A86 pasaron y **A87 quedó parcial** por el mismo
@@ -353,13 +357,64 @@ captura. Fuente editable: `docs/images/crimson-wm-f10-workarea.svg`.*
 
 Detalles, casos límite y limitaciones en el ADR 0012.
 
+## Reglas de ventanas (F11)
+
+![Captura real en Xvfb: con F10, cuatro ventanas en mosaico; con F11 y dos reglas, Viewer queda flotante y Chat va al escritorio 2, donde aparece sola](images/crimson-wm-f11-comparison.png)
+
+*Capturas auténticas en Xvfb aislados de 1280 × 720 (pruebas A133 y A134):
+el primer panel con el binario de F10 (commit f90dfa2), los otros dos con
+el de F11, con las mismas reglas. Volcados de `xwd -root` sin retoques.*
+
+- **Fuente provisional:** la variable `CRIMSON_RULES`, leída una vez al
+  arrancar. **Su sintaxis es inestable**; la sustituirá una configuración
+  TOML.
+- **Formato:** una regla por línea, con cláusulas separadas por `;`; las
+  líneas vacías y los comentarios `#` se ignoran.
+
+  ```text
+  class=Firefox; desktop=2
+  instance=pavucontrol; floating; nofocus
+  type=dialog; transient=no; fullscreen
+  ```
+
+- **Condiciones** (se combinan con Y lógico, exactas y sensibles a
+  mayúsculas): `instance=` y `class=` (las dos cadenas de `WM_CLASS`),
+  `type=` (el tipo EWMH efectivo) y `transient=yes|no`.
+- **Acciones:**
+  - `desktop=1…8`: la ventana espera oculta allí, sin cambiar el escritorio
+    activo ni el foco;
+  - `floating`;
+  - `nofocus`: solo evita el foco inicial;
+  - `fullscreen`: solo para los tipos que la admiten.
+- **Prioridad:** se evalúan todas las reglas en orden, y cada acción la
+  fija la primera regla que coincide y la define.
+- **Fuera de las reglas:** las ventanas adoptadas al arrancar, las
+  override-redirect, los paneles, los avisos y los fondos. Un diálogo con
+  propietario sigue siempre en el escritorio de su principal.
+- **Sin reevaluación:** cambiar después `WM_CLASS`, el título o el tipo no
+  vuelve a aplicar las reglas.
+- **Errores:**
+  - una fuente inválida se descarta entera y el WM arranca sin reglas,
+    después de registrarlo;
+  - un `WM_CLASS` defectuoso no coincide con ninguna regla;
+  - las salvaguardas no cambian.
+- **Aún no:** geometría inicial, títulos, comodines, expresiones regulares,
+  TOML ni valores con `;`.
+
+![Diagrama de F11: dónde se aplican las reglas, sintaxis provisional, evaluación determinista, prioridades protegidas, entradas inválidas y lo aplazado](images/crimson-wm-f11-rules.png)
+
+*Diagrama técnico elaborado a partir del código de F11; no es una captura.
+Fuente editable: `docs/images/crimson-wm-f11-rules.svg`.*
+
+Detalles, casos límite y limitaciones en el ADR 0013.
+
 ## Arranque y eventos
 
 ![Diagrama del arranque de Crimson WM en un Xvfb de prueba: valida DISPLAY, se conecta con cookie, aplica las salvaguardas, se identifica (WM_S0 y EWMH), adopta las ventanas visibles, atiende los eventos de mosaico, foco, escritorios y cierre y lanza programas sin shell; :0 se rechaza](images/crimson-wm-overview.svg)
 
 *Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 a
-0012. No es una captura ni demuestra una ejecución; los resultados de las
-pruebas están en los ADR 0003 a 0012.*
+0013. No es una captura ni demuestra una ejecución; los resultados de las
+pruebas están en los ADR 0003 a 0013.*
 
 ## Principios
 
@@ -415,7 +470,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U22)
+### Unitarias (U1–U23)
 
 ```sh
 cargo test --locked
@@ -648,10 +703,37 @@ tests/acceptance/f10/run.sh [BINARIO]
 - Los resultados se guardan en un directorio nuevo `crimson-f10.XXXXXX`
   dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
 
+### Aceptación de F11 (A121–A135)
+
+```sh
+cargo build --locked --bins --examples
+tests/acceptance/f11/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas, código de salida, aislamiento y
+  programas falsos que el arnés de F10.
+- `CRIMSON_RULES` solo llega al WM en este arnés: `start11` la añade al
+  entorno mínimo de cada caso. Los `run.sh` de F1–F11 la eliminan del
+  entorno heredado.
+- `test-client` también pone `WM_CLASS` (`--class INSTANCIA CLASE`). Los
+  valores defectuosos se escriben con `xprop`, y el cambio dinámico con
+  `xdotool set_window --class`.
+- Parte de A132 se ejecuta con `unshare -rmn`, sin ningún servidor X
+  visible, como A1–A3a de F1. Comprueba que `:0` y la falta de token se
+  rechazan igual con reglas.
+- A133 usa el binario de F10 que indique `CRIMSON_F10_BIN`, compilado a
+  partir de `git archive f90dfa2` en un directorio temporal, sin worktree
+  ni red. Sin esa variable, A133 y la composición de A134 quedan OMITIDAS.
+- A134 hace las capturas de F11 y compone y valida la comparación. La
+  imagen del repositorio procede de esa prueba.
+- A135 equivale a A9 y queda siempre parcial.
+- Los resultados se guardan en un directorio nuevo `crimson-f11.XXXXXX`
+  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+
 ### Imágenes de los diagramas
 
 ```sh
-tools/render-svg.py docs/images/crimson-wm-f10-workarea.svg docs/images/crimson-wm-f10-workarea.png --scale 2
+tools/render-svg.py docs/images/crimson-wm-f11-rules.svg docs/images/crimson-wm-f11-rules.png --scale 2
 ```
 
 Renderiza un SVG a PNG con las bibliotecas del sistema (librsvg y cairo),
@@ -704,6 +786,7 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
   fijas y capas de apilamiento de F9.
 - `docs/adr/0012-struts-y-area-de-trabajo.md`: struts y área de trabajo de
   F10.
+- `docs/adr/0013-reglas-de-ventanas.md`: reglas de ventanas de F11.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior

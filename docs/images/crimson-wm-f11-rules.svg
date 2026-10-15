@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1460" viewBox="0 0 1400 1460" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F11: reglas de ventanas</title>
+  <desc id="desc">Diagrama técnico basado en el código de F11 (ADR 0013); no es una
+    captura. Muestra el flujo de un MapRequest desde la clasificación hasta el
+    foco, con el punto en que se evalúan las reglas; la sintaxis provisional de
+    CRIMSON_RULES con sus condiciones y acciones; la semántica de evaluación
+    (Y lógico, orden y primera regla que define cada acción); las prioridades
+    que una regla no puede cambiar; el tratamiento de fuentes y WM_CLASS
+    inválidas, y lo aplazado.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif; font-size: 14px; fill: #1F2328; }
+      .title { font-size: 26px; font-weight: 700; }
+      .h { font-size: 17px; font-weight: 700; }
+      .h2 { font-size: 15px; font-weight: 700; }
+      .muted { fill: #57606A; }
+      .accent { fill: #8B0A1F; }
+      .small { font-size: 13px; }
+      .label { font-size: 13px; fill: #57606A; }
+      .mono { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 13px; }
+      .nlabel { font-size: 15px; font-weight: 700; }
+      .light { fill: #FFFFFF; }
+      .frame { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .deferred { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 6 5; }
+      .n-red { fill: #8B0A1F; stroke: #1F2328; stroke-width: 1.2; }
+      .n-dark { fill: #1F2328; stroke: #1F2328; stroke-width: 1.2; }
+      .n-light { fill: #D0D7DE; stroke: #1F2328; stroke-width: 1.2; }
+      .n-white { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.2; }
+      .n-soft { fill: #F6F8FA; stroke: #1F2328; stroke-width: 1.2; }
+      .n-bad { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 5 4; }
+      .code { fill: #F6F8FA; stroke: #D0D7DE; stroke-width: 1; }
+      .flow { stroke: #1F2328; stroke-width: 1.8; fill: none; }
+      .flow-bad { stroke: #8C959F; stroke-width: 1.6; stroke-dasharray: 5 4; fill: none; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#1F2328"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#8C959F"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="1460" fill="#FFFFFF"/>
+  <text class="title" x="30" y="46">Crimson WM · F11: reglas de ventanas (CRIMSON_RULES, provisional)</text>
+  <text class="muted" x="30" y="74">Diagrama técnico del código de F11 (ADR 0013). No es una captura: la captura real está en crimson-wm-f11-comparison.png.</text>
+
+  <!-- 1. Flujo -->
+  <rect class="frame" x="30" y="92" width="1340" height="292" rx="8"/>
+  <text class="h" x="48" y="122">1 · Dónde se aplican: MapRequest de una ventana nueva, después de clasificarla</text>
+  <rect class="n-soft" x="50" y="146" width="150" height="56" rx="6"/>
+  <text class="nlabel" x="125" y="170" text-anchor="middle">MapRequest</text>
+  <text class="small" x="125" y="190" text-anchor="middle">ventana nueva</text>
+  <line class="flow" x1="200" y1="174" x2="236" y2="174" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="238" y="146" width="190" height="56" rx="6"/>
+  <text class="nlabel" x="333" y="170" text-anchor="middle">clients::classify</text>
+  <text class="small" x="333" y="190" text-anchor="middle">(F9, sin cambios)</text>
+  <line class="flow-bad" x1="333" y1="202" x2="333" y2="240" marker-end="url(#arrow-gray)"/>
+  <rect class="n-bad" x="238" y="242" width="190" height="64" rx="6"/>
+  <text class="nlabel" x="333" y="266" text-anchor="middle">fija u override-</text>
+  <text class="nlabel" x="333" y="286" text-anchor="middle">redirect: sin reglas</text>
+  <line class="flow" x1="428" y1="174" x2="464" y2="174" marker-end="url(#arrow)"/>
+  <rect class="n-red" x="466" y="140" width="250" height="68" rx="6"/>
+  <text class="nlabel light" x="591" y="166" text-anchor="middle">rules::evaluate</text>
+  <text class="small light" x="591" y="188" text-anchor="middle">WM_CLASS · tipo · transient</text>
+  <line class="flow" x1="716" y1="174" x2="752" y2="174" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="754" y="140" width="290" height="68" rx="6"/>
+  <text class="nlabel" x="899" y="164" text-anchor="middle">floating → kind = Floating</text>
+  <text class="small" x="899" y="186" text-anchor="middle">(solo de mosaico a flotante); manage</text>
+  <line class="flow" x1="1044" y1="174" x2="1080" y2="174" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="1082" y="140" width="270" height="68" rx="6"/>
+  <text class="nlabel" x="1217" y="164" text-anchor="middle">desktop → place_on</text>
+  <text class="small" x="1217" y="186" text-anchor="middle">oculta allí; diálogo: su principal</text>
+  <line class="flow" x1="1217" y1="208" x2="1217" y2="240" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="982" y="242" width="370" height="64" rx="6"/>
+  <text class="nlabel" x="1167" y="266" text-anchor="middle">fullscreen → set_fullscreen</text>
+  <text class="small" x="1167" y="288" text-anchor="middle">solo si el tipo la admite (F9)</text>
+  <line class="flow" x1="982" y1="274" x2="946" y2="274" marker-end="url(#arrow)"/>
+  <rect class="n-dark" x="606" y="242" width="338" height="64" rx="6"/>
+  <text class="nlabel light" x="775" y="266" text-anchor="middle">arrange · MapWindow · foco</text>
+  <text class="small light" x="775" y="288" text-anchor="middle">nofocus: sin foco inicial, nada más</text>
+  <text class="label" x="48" y="336">Adopción al arrancar: sin reglas. Una ventana oculta en otro escritorio no se mapea ni recibe el foco, y el escritorio activo no cambia.</text>
+  <text class="label" x="48" y="358">Sin CRIMSON_RULES, la decisión está vacía y el WM se comporta como en F10. Los cambios posteriores de WM_CLASS, título o tipo no reevalúan nada.</text>
+
+  <!-- 2. Sintaxis -->
+  <rect class="frame" x="30" y="400" width="660" height="410" rx="8"/>
+  <text class="h" x="48" y="430">2 · Sintaxis provisional (inestable)</text>
+  <rect class="code" x="50" y="446" width="620" height="92" rx="4"/>
+  <text class="mono" x="64" y="470"># una regla por línea; cláusulas separadas por ;</text>
+  <text class="mono" x="64" y="492">class=Firefox; desktop=2</text>
+  <text class="mono" x="64" y="514">instance=pavucontrol; floating; nofocus</text>
+  <text class="mono" x="64" y="532">type=dialog; transient=no; fullscreen</text>
+  <text class="h2" x="50" y="570">Condiciones (Y lógico)</text>
+  <text class="small" x="50" y="594">· instance=…, class=…: exactas, con mayúsculas; bytes de WM_CLASS.</text>
+  <text class="small" x="50" y="616">· type=normal|dialog|utility|toolbar|splash|menu|dropdown_menu|</text>
+  <text class="small" x="50" y="636">  popup_menu|tooltip|combo|dnd: tipo efectivo (sin tipo: normal,</text>
+  <text class="small" x="50" y="656">  o dialog si es transitoria). dock, desktop, notification: error.</text>
+  <text class="small" x="50" y="678">· transient=yes|no: tiene WM_TRANSIENT_FOR.</text>
+  <text class="h2" x="50" y="712">Acciones</text>
+  <text class="small" x="50" y="736">· desktop=1…8 · floating · nofocus · fullscreen</text>
+  <text class="label" x="50" y="768">Al menos una condición y una acción. Claves desconocidas o repetidas,</text>
+  <text class="label" x="50" y="788">cláusulas vacías y valores fuera de rango invalidan la fuente.</text>
+
+  <!-- 3. Semántica -->
+  <rect class="frame" x="710" y="400" width="660" height="410" rx="8"/>
+  <text class="h" x="728" y="430">3 · Evaluación determinista</text>
+  <text class="small" x="728" y="458">Se evalúan todas las reglas en orden. Cada acción la fija la primera regla</text>
+  <text class="small" x="728" y="478">que coincide y la define; un escritorio distinto posterior se ignora y se registra.</text>
+  <rect class="code" x="728" y="494" width="622" height="72" rx="4"/>
+  <text class="mono" x="742" y="516">1  class=Chat; desktop=2</text>
+  <text class="mono" x="742" y="538">2  class=Chat; desktop=4; floating</text>
+  <text class="mono" x="742" y="558">3  instance=chat; nofocus</text>
+  <rect class="n-red" x="728" y="582" width="200" height="40" rx="5"/>
+  <text class="nlabel light" x="828" y="607" text-anchor="middle">escritorio 2 (1)</text>
+  <rect class="n-light" x="938" y="582" width="200" height="40" rx="5"/>
+  <text class="nlabel" x="1038" y="607" text-anchor="middle">flotante (2)</text>
+  <rect class="n-light" x="1148" y="582" width="200" height="40" rx="5"/>
+  <text class="nlabel" x="1248" y="607" text-anchor="middle">sin foco (3)</text>
+  <text class="small accent" x="728" y="646">escritorio 4 de la línea 2: ignorado (ya lo fija la línea 1)</text>
+  <text class="h2" x="728" y="684">Lo que una regla no puede cambiar</text>
+  <text class="small" x="728" y="708">· Override-redirect, DOCK, DESKTOP y NOTIFICATION: fuera de las reglas.</text>
+  <text class="small" x="728" y="730">· Un diálogo con propietario sigue a su principal (F8).</text>
+  <text class="small" x="728" y="752">· Pantalla completa solo si el tipo la admite (F9); flotante no pasa a mosaico.</text>
+  <text class="small" x="728" y="774">· Ninguna regla roba el foco ni cambia el escritorio activo.</text>
+  <text class="small" x="728" y="796">· Se leen tras validar DISPLAY y el token; no relajan ninguna salvaguarda.</text>
+
+  <!-- 4. Errores -->
+  <rect class="frame" x="30" y="826" width="900" height="610" rx="8"/>
+  <text class="h" x="48" y="856">4 · Entradas inválidas</text>
+  <text class="h2" x="50" y="888">CRIMSON_RULES (se lee una vez, antes de conectar)</text>
+  <text class="small" x="50" y="912">· Inválida: se registra y se descarta entera; el WM sigue sin reglas.</text>
+  <text class="small" x="50" y="934">· Límites: 16384 bytes y 64 reglas; la fuente debe ser UTF-8.</text>
+  <text class="small" x="50" y="956">· No pasa a los programas lanzados (como el token del sandbox).</text>
+  <rect class="code" x="50" y="972" width="860" height="118" rx="4"/>
+  <text class="mono" x="64" y="994">CRIMSON_RULES inválida (línea 1: escritorio «9» fuera de 1–8): se continúa sin reglas</text>
+  <text class="mono" x="64" y="1016">CRIMSON_RULES inválida (65 reglas (máximo 64)): se continúa sin reglas</text>
+  <text class="mono" x="64" y="1038">CRIMSON_RULES inválida (16422 bytes (máximo 16384)): se continúa sin reglas</text>
+  <text class="mono" x="64" y="1060">CRIMSON_RULES inválida (no es UTF-8): se continúa sin reglas</text>
+  <text class="mono" x="64" y="1080">(registros reales de la prueba A132)</text>
+  <text class="h2" x="50" y="1124">WM_CLASS (STRING, formato 8, como mucho 512 bytes, dos cadenas)</text>
+  <text class="small" x="50" y="1148">· Ausente o defectuosa: sin clase; las condiciones de clase no coinciden.</text>
+  <text class="small" x="50" y="1170">· La ventana se gestiona igual; las demás siguen con sus reglas.</text>
+  <rect class="code" x="50" y="1186" width="860" height="70" rx="4"/>
+  <text class="mono" x="64" y="1208">una sola cadena      → Structure { strings: 1 }</text>
+  <text class="mono" x="64" y="1228">CARDINAL, formato 32 → Type { type_: 6, format: 32 }</text>
+  <text class="mono" x="64" y="1248">600 bytes            → TooLong { bytes_after: 88 }</text>
+  <text class="h2" x="50" y="1294">Salvaguardas intactas (A132)</text>
+  <text class="small" x="50" y="1318">· :0 se rechaza (código 10) con reglas válidas o inválidas, sin conectar.</text>
+  <text class="small" x="50" y="1340">· Sin token o sin marca de sandbox no arranca, aunque haya reglas.</text>
+  <text class="label" x="50" y="1380">Comparación exacta de bytes, sin expresiones regulares, comodines ni</text>
+  <text class="label" x="50" y="1400">órdenes externas. Sin dependencias nuevas ni unsafe.</text>
+
+  <!-- 5. Aplazado -->
+  <rect class="deferred" x="950" y="826" width="420" height="610" rx="8"/>
+  <text class="h muted" x="968" y="856">5 · Aplazado (no implementado)</text>
+  <text class="small muted" x="968" y="886">· Configuración TOML y su recarga: la</text>
+  <text class="small muted" x="968" y="906">  sintaxis actual es provisional.</text>
+  <text class="small muted" x="968" y="932">· Geometría inicial de las flotantes.</text>
+  <text class="small muted" x="968" y="958">· Coincidencia por título (WM_NAME,</text>
+  <text class="small muted" x="968" y="978">  _NET_WM_NAME).</text>
+  <text class="small muted" x="968" y="1004">· Expresiones regulares y comodines.</text>
+  <text class="small muted" x="968" y="1030">· Reevaluar con la ventana mapeada.</text>
+  <text class="small muted" x="968" y="1056">· Cambiar al escritorio de destino.</text>
+  <text class="small muted" x="968" y="1082">· Forzar mosaico o foco; sticky.</text>
+  <text class="small muted" x="968" y="1108">· Reglas en la adopción y en ventanas</text>
+  <text class="small muted" x="968" y="1128">  fijas.</text>
+  <text class="small muted" x="968" y="1154">· Valores con «;» (sin escape).</text>
+</svg>

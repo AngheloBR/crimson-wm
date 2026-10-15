@@ -22,6 +22,10 @@
 - **Actualización F10 (2026-10-14):** el centrado limita el diálogo al área
   de trabajo, no a la pantalla, así que no nace debajo de un panel que
   reserva espacio (ADR 0012).
+- **Actualización F11 (2026-10-14):** `place_with_owner` se apoya en
+  `place_on`, que también usan las reglas de escritorio. Un diálogo con
+  propietario efectivo sigue siempre en el escritorio de su principal: el
+  escritorio de una regla se ignora y se registra (ADR 0013).
 
 ![Captura real en Xvfb: dos ventanas en master-stack; un diálogo de la izquierda, centrado sobre ella y enfocado; y la principal a pantalla completa con su diálogo encima](../images/crimson-wm-f8-comparison.png)
 

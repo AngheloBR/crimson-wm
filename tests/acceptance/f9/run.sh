@@ -71,7 +71,7 @@ if [[ -n $F8_BIN ]]; then
 fi
 
 # Nada de lo que se ejecute aquí debe heredar el acceso a la sesión real.
-unset DISPLAY XAUTHORITY CRIMSON_SANDBOX_TOKEN DBUS_SESSION_BUS_ADDRESS WINDOWID DESKTOP_STARTUP_ID CRIMSON_F8_BIN
+unset DISPLAY XAUTHORITY CRIMSON_SANDBOX_TOKEN DBUS_SESSION_BUS_ADDRESS WINDOWID DESKTOP_STARTUP_ID CRIMSON_F8_BIN CRIMSON_RULES
 
 OUT=$(mktemp -d -t crimson-f9.XXXXXX) || exit 2
 # shellcheck source=../f1/lib.sh

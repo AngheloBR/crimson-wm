@@ -1,5 +1,5 @@
-//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F10 (ADR 0007
-//! a 0012). Genera lo que las herramientas instaladas no pueden: el
+//! Cliente X11 auxiliar de las pruebas de aceptación de F5 a F11 (ADR 0007
+//! a 0013). Genera lo que las herramientas instaladas no pueden: el
 //! `UnmapNotify` sintético de ICCCM §4.1.4, mensajes EWMH arbitrarios, la
 //! propiedad de una selección y una ventana que registra los mensajes
 //! `WM_PROTOCOLS` que recibe. No forma parte del WM: solo lo ejecutan los
@@ -35,7 +35,8 @@
 //!   crea la ventana override-redirect (el WM no la gestiona). Desde F10:
 //!   `--strut L R T B` pone `_NET_WM_STRUT` y `--strut-partial V1 … V12`,
 //!   `_NET_WM_STRUT_PARTIAL` (CARDINAL de 32 bits; para valores mal
-//!   formados, las pruebas usan xprop).
+//!   formados, las pruebas usan xprop). Desde F11: `--class INSTANCIA CLASE`
+//!   pone `WM_CLASS` (dos cadenas terminadas en NUL, ICCCM §4.1.2.5).
 //!
 //! Solo se conecta a un DISPLAY de la forma `:N` con N distinto de 0.
 
@@ -214,6 +215,7 @@ fn client_window(
     let mut override_redirect = false;
     let mut strut: Option<Vec<u32>> = None;
     let mut strut_partial: Option<Vec<u32>> = None;
+    let mut wm_class: Option<(String, String)> = None;
     let mut geometry: (i16, i16, u16, u16) = (0, 0, 200, 100);
     let mut border: u16 = 0;
     let mut transient_for: Option<String> = None;
@@ -249,6 +251,7 @@ fn client_window(
                         .collect::<Res<_>>()?,
                 )
             }
+            "--class" => wm_class = Some((next("INSTANCIA")?, next("CLASE")?)),
             "--strut-partial" => {
                 strut_partial = Some(
                     (0..12)
@@ -367,6 +370,16 @@ fn client_window(
                     values,
                 )?;
             }
+        }
+        if let Some((instance, class)) = &wm_class {
+            let value = format!("{instance}\0{class}\0");
+            conn.change_property8(
+                PropMode::REPLACE,
+                window,
+                AtomEnum::WM_CLASS,
+                AtomEnum::STRING,
+                value.as_bytes(),
+            )?;
         }
         if let Some(owner) = &transient_for {
             let owner = match owner.as_str() {
