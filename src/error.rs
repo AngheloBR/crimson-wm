@@ -1,4 +1,5 @@
-//! Errores fatales y su código de salida (tabla del ADR 0003).
+//! Errores fatales y su código de salida (tabla del ADR 0003, ampliada con
+//! el código 15 en el ADR 0014).
 
 use std::fmt;
 
@@ -22,6 +23,9 @@ pub enum Fatal {
     ConnectionLost(String),
     /// Error de protocolo inesperado al arrancar (código 14).
     Startup(String),
+    /// Configuración ilegible o inválida (código 15, ADR 0014). Se detecta
+    /// antes de conectar con X.
+    Config(String),
 }
 
 impl Fatal {
@@ -33,6 +37,7 @@ impl Fatal {
             Fatal::OtherWm(_) => 12,
             Fatal::ConnectionLost(_) => 13,
             Fatal::Startup(_) => 14,
+            Fatal::Config(_) => 15,
         }
     }
 
@@ -62,7 +67,8 @@ impl fmt::Display for Fatal {
             | Fatal::Unreachable(msg)
             | Fatal::OtherWm(msg)
             | Fatal::ConnectionLost(msg)
-            | Fatal::Startup(msg) => f.write_str(msg),
+            | Fatal::Startup(msg)
+            | Fatal::Config(msg) => f.write_str(msg),
         }
     }
 }
@@ -80,6 +86,7 @@ mod tests {
             (Fatal::OtherWm(String::new()), 12),
             (Fatal::ConnectionLost(String::new()), 13),
             (Fatal::Startup(String::new()), 14),
+            (Fatal::Config(String::new()), 15),
         ];
         for (fatal, codigo) in casos {
             assert_eq!(fatal.exit_code(), codigo, "{fatal:?}");

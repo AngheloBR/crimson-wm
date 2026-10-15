@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1500" viewBox="0 0 1400 1500" role="img" aria-labelledby="title desc" xml:lang="es">
+  <title id="title">Crimson WM, fase F12: configuración TOML</title>
+  <desc id="desc">Diagrama técnico basado en el código de F12 (ADR 0014); no es una
+    captura. Muestra dónde se lee crimson/wm.toml en el arranque, entre las
+    salvaguardas que no necesitan conexión y la conexión con X; las cuatro
+    etapas (ruta, lectura acotada, análisis TOML y esquema) que terminan en
+    el código 15 si fallan; la precedencia de las fuentes; las comprobaciones
+    del archivo; el esquema con sus cuatro secciones y límites; el efecto de
+    master_percent; la precedencia de CRIMSON_RULES, y lo que no es
+    configurable o queda aplazado.</desc>
+  <defs>
+    <style>
+      text { font-family: "DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif; font-size: 14px; fill: #1F2328; }
+      .title { font-size: 26px; font-weight: 700; }
+      .h { font-size: 17px; font-weight: 700; }
+      .h2 { font-size: 15px; font-weight: 700; }
+      .muted { fill: #57606A; }
+      .accent { fill: #8B0A1F; }
+      .small { font-size: 13px; }
+      .label { font-size: 13px; fill: #57606A; }
+      .mono { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 13px; }
+      .nlabel { font-size: 15px; font-weight: 700; }
+      .light { fill: #FFFFFF; }
+      .frame { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.5; }
+      .deferred { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 6 5; }
+      .n-red { fill: #8B0A1F; stroke: #1F2328; stroke-width: 1.2; }
+      .n-dark { fill: #1F2328; stroke: #1F2328; stroke-width: 1.2; }
+      .n-light { fill: #D0D7DE; stroke: #1F2328; stroke-width: 1.2; }
+      .n-white { fill: #FFFFFF; stroke: #1F2328; stroke-width: 1.2; }
+      .n-soft { fill: #F6F8FA; stroke: #1F2328; stroke-width: 1.2; }
+      .n-bad { fill: #FFFFFF; stroke: #8C959F; stroke-width: 1.5; stroke-dasharray: 5 4; }
+      .code { fill: #F6F8FA; stroke: #D0D7DE; stroke-width: 1; }
+      .flow { stroke: #1F2328; stroke-width: 1.8; fill: none; }
+      .flow-bad { stroke: #8C959F; stroke-width: 1.6; stroke-dasharray: 5 4; fill: none; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#1F2328"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#8C959F"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="1500" fill="#FFFFFF"/>
+  <text class="title" x="30" y="46">Crimson WM · F12: configuración TOML (crimson/wm.toml)</text>
+  <text class="muted" x="30" y="74">Diagrama técnico del código de F12 (ADR 0014). No es una captura: la captura real está en crimson-wm-f12-comparison.png.</text>
+
+  <!-- 1. Arranque -->
+  <rect class="frame" x="30" y="92" width="1340" height="300" rx="8"/>
+  <text class="h" x="48" y="122">1 · Arranque: la configuración se lee y valida entera una vez, después de las capas 1 y 2 y antes de conectar con X</text>
+
+  <rect class="n-soft" x="50" y="140" width="145" height="60" rx="6"/>
+  <text class="nlabel" x="122" y="165" text-anchor="middle">crimson-wm</text>
+  <text class="small" x="122" y="186" text-anchor="middle">[--config RUTA]</text>
+  <line class="flow" x1="195" y1="170" x2="213" y2="170" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="215" y="140" width="145" height="60" rx="6"/>
+  <text class="nlabel" x="287" y="165" text-anchor="middle">Capa 1</text>
+  <text class="small" x="287" y="186" text-anchor="middle">DISPLAY ≠ :0</text>
+  <line class="flow" x1="360" y1="170" x2="378" y2="170" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="380" y="140" width="145" height="60" rx="6"/>
+  <text class="nlabel" x="452" y="165" text-anchor="middle">Capa 2</text>
+  <text class="small" x="452" y="186" text-anchor="middle">token del sandbox</text>
+  <line class="flow" x1="525" y1="170" x2="543" y2="170" marker-end="url(#arrow)"/>
+  <rect class="n-red" x="545" y="140" width="145" height="60" rx="6"/>
+  <text class="nlabel light" x="617" y="165" text-anchor="middle">Configuración</text>
+  <text class="small light" x="617" y="186" text-anchor="middle">wm.toml · F12</text>
+  <line class="flow" x1="690" y1="170" x2="708" y2="170" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="710" y="140" width="145" height="60" rx="6"/>
+  <text class="nlabel" x="782" y="165" text-anchor="middle" style="font-size: 13px">CRIMSON_RULES</text>
+  <text class="small" x="782" y="186" text-anchor="middle">obsoleta (§5)</text>
+  <line class="flow" x1="855" y1="170" x2="873" y2="170" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="875" y="140" width="145" height="60" rx="6"/>
+  <text class="nlabel" x="947" y="165" text-anchor="middle">Conexión X</text>
+  <text class="small" x="947" y="186" text-anchor="middle">«conectado a :N»</text>
+  <line class="flow" x1="1020" y1="170" x2="1038" y2="170" marker-end="url(#arrow)"/>
+  <rect class="n-white" x="1040" y="140" width="145" height="60" rx="6"/>
+  <text class="nlabel" x="1112" y="165" text-anchor="middle">Capas 3 y 4</text>
+  <text class="small" x="1112" y="186" text-anchor="middle">marca, otro WM</text>
+  <line class="flow" x1="1185" y1="170" x2="1203" y2="170" marker-end="url(#arrow)"/>
+  <rect class="n-dark" x="1205" y="140" width="145" height="60" rx="6"/>
+  <text class="nlabel light" x="1277" y="165" text-anchor="middle">wm::run</text>
+  <text class="small light" x="1277" y="186" text-anchor="middle">aplica la Config</text>
+
+  <!-- detalle de la etapa F12 -->
+  <line class="flow" x1="560" y1="200" x2="400" y2="236"/>
+  <line class="flow" x1="675" y1="200" x2="1040" y2="236"/>
+  <rect class="n-soft" x="400" y="236" width="150" height="58" rx="6"/>
+  <text class="nlabel" x="475" y="260" text-anchor="middle">1 · Ruta</text>
+  <text class="small" x="475" y="280" text-anchor="middle">--config, XDG, HOME</text>
+  <line class="flow" x1="550" y1="265" x2="568" y2="265" marker-end="url(#arrow)"/>
+  <rect class="n-soft" x="570" y="236" width="150" height="58" rx="6"/>
+  <text class="nlabel" x="645" y="260" text-anchor="middle">2 · Lectura</text>
+  <text class="small" x="645" y="280" text-anchor="middle">acotada y segura (§3)</text>
+  <line class="flow" x1="720" y1="265" x2="738" y2="265" marker-end="url(#arrow)"/>
+  <rect class="n-soft" x="740" y="236" width="150" height="58" rx="6"/>
+  <text class="nlabel" x="815" y="260" text-anchor="middle">3 · TOML 1.1</text>
+  <text class="small" x="815" y="280" text-anchor="middle">toml_parser → árbol</text>
+  <line class="flow" x1="890" y1="265" x2="908" y2="265" marker-end="url(#arrow)"/>
+  <rect class="n-soft" x="910" y="236" width="130" height="58" rx="6"/>
+  <text class="nlabel" x="975" y="260" text-anchor="middle">4 · Esquema</text>
+  <text class="small" x="975" y="280" text-anchor="middle">Config inmutable</text>
+
+  <line class="flow-bad" x1="475" y1="294" x2="475" y2="322" marker-end="url(#arrow-gray)"/>
+  <line class="flow-bad" x1="645" y1="294" x2="645" y2="322" marker-end="url(#arrow-gray)"/>
+  <line class="flow-bad" x1="815" y1="294" x2="815" y2="322" marker-end="url(#arrow-gray)"/>
+  <line class="flow-bad" x1="975" y1="294" x2="975" y2="322" marker-end="url(#arrow-gray)"/>
+  <rect class="n-bad" x="400" y="324" width="640" height="54" rx="6"/>
+  <text class="h2 accent" x="720" y="346" text-anchor="middle">Cualquier error → código 15, sin conectar con X</text>
+  <text class="small muted" x="720" y="366" text-anchor="middle">«configuración rechazada: archivo:línea:columna: motivo»; nunca se aplica una parte</text>
+
+  <rect class="n-white" x="50" y="236" width="320" height="142" rx="6"/>
+  <text class="h2" x="66" y="260">--check-config [RUTA]</text>
+  <text class="small" x="66" y="284">Etapas 1–4 y CRIMSON_RULES, igual que</text>
+  <text class="small" x="66" y="302">al arrancar, pero sin leer DISPLAY,</text>
+  <text class="small" x="66" y="320">XAUTHORITY ni el token, sin conectar,</text>
+  <text class="small" x="66" y="338">sin lanzar nada ni escribir archivos.</text>
+  <text class="small" x="66" y="362"><tspan font-weight="700">Código 0</tspan> si es válida, <tspan font-weight="700">15</tspan> si no.</text>
+  <line class="flow" x1="370" y1="265" x2="398" y2="265" marker-end="url(#arrow)"/>
+
+  <text class="small muted" x="1060" y="252">Las capas 1 y 2 van primero:</text>
+  <text class="small muted" x="1060" y="270">DISPLAY=:0 da 10 aunque la</text>
+  <text class="small muted" x="1060" y="288">configuración sea inválida.</text>
+  <text class="small muted" x="1060" y="318">Sin archivo: configuración</text>
+  <text class="small muted" x="1060" y="336">predeterminada, idéntica a F11</text>
+  <text class="small muted" x="1060" y="354">(30 atajos, 6 programas, 50 %,</text>
+  <text class="small muted" x="1060" y="372">ninguna regla).</text>
+
+  <!-- 2. Precedencia -->
+  <rect class="frame" x="30" y="410" width="660" height="290" rx="8"/>
+  <text class="h" x="48" y="440">2 · Precedencia de las fuentes</text>
+  <rect class="n-red" x="50" y="458" width="36" height="36" rx="18"/>
+  <text class="nlabel light" x="68" y="482" text-anchor="middle">1</text>
+  <text class="mono" x="100" y="474">--config RUTA</text>
+  <text class="small muted" x="100" y="491">solo esa ruta; si no existe → 15</text>
+  <rect class="n-dark" x="50" y="506" width="36" height="36" rx="18"/>
+  <text class="nlabel light" x="68" y="530" text-anchor="middle">2</text>
+  <text class="mono" x="100" y="522">$XDG_CONFIG_HOME/crimson/wm.toml</text>
+  <text class="small muted" x="100" y="539">si es absoluta; vacía o ausente: no cuenta; relativa: aviso y se ignora</text>
+  <rect class="n-light" x="50" y="554" width="36" height="36" rx="18"/>
+  <text class="nlabel" x="68" y="578" text-anchor="middle">3</text>
+  <text class="mono" x="100" y="570">$HOME/.config/crimson/wm.toml</text>
+  <text class="small muted" x="100" y="587">si HOME es absoluta (si coincide con la 2, se prueba una vez)</text>
+  <rect class="n-white" x="50" y="602" width="36" height="36" rx="18"/>
+  <text class="nlabel" x="68" y="626" text-anchor="middle">4</text>
+  <text class="h2" x="100" y="618">Predeterminada (F11)</text>
+  <text class="small muted" x="100" y="635">si no existe ningún archivo; el registro lista las rutas buscadas</text>
+  <text class="small" x="50" y="666"><tspan font-weight="700">Gana la primera que existe.</tspan> Si es ilegible o inválida → 15:</text>
+  <text class="small" x="50" y="684">nunca se pasa a la siguiente. Un enlace roto existe. No se crea nada.</text>
+
+  <!-- 3. Lectura segura -->
+  <rect class="frame" x="710" y="410" width="660" height="290" rx="8"/>
+  <text class="h" x="728" y="440">3 · Lectura acotada y segura (sobre el descriptor abierto)</text>
+  <text class="small" x="728" y="472">• <tspan font-weight="700">Archivo regular</tspan>: comprobado antes y después de abrir.</text>
+  <text class="small" x="740" y="490">O_NONBLOCK | O_NOCTTY; mismo dev/inodo en el descriptor.</text>
+  <text class="small" x="728" y="516">• Enlaces simbólicos: se siguen y se comprueba el destino.</text>
+  <text class="small" x="728" y="542">• <tspan font-weight="700">Ni el grupo ni otros pueden escribirlo</tspan> (chmod go-w):</text>
+  <text class="small" x="740" y="560">el archivo decide qué programas se ejecutan como el usuario.</text>
+  <text class="small" x="728" y="586">• <tspan font-weight="700">Como mucho 64 KiB</tspan>, también si crece durante la lectura.</text>
+  <text class="small" x="728" y="612">• <tspan font-weight="700">UTF-8 válido</tspan> (el error indica la línea).</text>
+  <text class="small" x="728" y="638">• Los mensajes nombran claves, teclas y números, nunca argv</text>
+  <text class="small" x="740" y="656">ni las cadenas de las reglas.</text>
+  <text class="small muted" x="728" y="684">Rechazos: directorio, FIFO, socket, dispositivo, permisos 0660, 000…</text>
+
+  <!-- 4. Esquema -->
+  <rect class="frame" x="30" y="718" width="1340" height="372" rx="8"/>
+  <text class="h" x="48" y="748">4 · Esquema: solo cuatro secciones; cualquier otra clave, tipo o valor fuera de rango es un error</text>
+  <rect class="code" x="50" y="764" width="520" height="308" rx="6"/>
+  <text class="mono" x="66" y="788">[layout]</text>
+  <text class="mono" x="66" y="806">master_percent = 60           <tspan class="muted"># 10–90; 50</tspan></text>
+  <text class="mono" x="66" y="836">[programs.terminal]           <tspan class="muted"># 64 como mucho</tspan></text>
+  <text class="mono" x="66" y="854">argv = ["kitty"]              <tspan class="muted"># sin shell</tspan></text>
+  <text class="mono" x="66" y="884">[[keybindings]]               <tspan class="muted"># 128 como mucho</tspan></text>
+  <text class="mono" x="66" y="902">keys = "Mod4+Shift+Escape"</text>
+  <text class="mono" x="66" y="920">action = "exit"               <tspan class="muted"># obligatorio</tspan></text>
+  <text class="mono" x="66" y="944">[[keybindings]]</text>
+  <text class="mono" x="66" y="962">keys = "Super+Return"         <tspan class="muted"># = Mod4+Return</tspan></text>
+  <text class="mono" x="66" y="980">action = "launch"</text>
+  <text class="mono" x="66" y="998">program = "terminal"</text>
+  <text class="mono" x="66" y="1028">[[rules]]                     <tspan class="muted"># 64 como mucho</tspan></text>
+  <text class="mono" x="66" y="1046">class = "Firefox"</text>
+  <text class="mono" x="66" y="1064">desktop = 2</text>
+
+  <text class="h2" x="596" y="790">[programs.NOMBRE]</text>
+  <text class="small" x="596" y="810">argv: 1–32 cadenas de hasta 4 KiB, sin NUL. argv[0]: nombre del PATH o ruta</text>
+  <text class="small" x="596" y="828">absoluta; nunca «~», «$» ni rutas relativas. Sin shell, entorno, directorio</text>
+  <text class="small" x="596" y="846">ni usuario: el hijo recibe el entorno saneado de F4.</text>
+  <text class="h2" x="596" y="878">[[keybindings]]</text>
+  <text class="small" x="596" y="898">keys: Shift, Control|Ctrl, Mod1|Alt, Mod4|Super + una tecla de una tabla de</text>
+  <text class="small" x="596" y="916">keysyms contrastada con keysymdef.h y XF86keysym.h. Se normaliza antes de</text>
+  <text class="small" x="596" y="934">buscar repetidos. Las teclas de escritura exigen Control, Mod1 o Mod4.</text>
+  <text class="small" x="596" y="952">Acciones de F3–F7: exit, focus_next/prev, zoom, launch (program), view_desktop</text>
+  <text class="small" x="596" y="970">y move_to_desktop (desktop 1–8), view_previous, close, kill, fullscreen.</text>
+  <text class="small" x="596" y="988">Un parámetro que la acción no usa es un error. Al capturar: control → 14.</text>
+  <text class="h2" x="596" y="1020">[[rules]]</text>
+  <text class="small" x="596" y="1040">Mismas claves y evaluador que F11 (rules.rs): instance, class, type, transient;</text>
+  <text class="small" x="596" y="1058">desktop, floating, nofocus, fullscreen. Las líneas son las del archivo.</text>
+  <rect class="n-light" x="596" y="1066" width="756" height="20" rx="4"/>
+  <text class="small" x="606" y="1081"><tspan font-weight="700">[programs] y [[keybindings]] sustituyen cada uno su tabla predeterminada completa, sin fusionar.</tspan></text>
+
+  <!-- 5. Efecto y CRIMSON_RULES -->
+  <rect class="frame" x="30" y="1108" width="660" height="230" rx="8"/>
+  <text class="h" x="48" y="1138">5a · master_percent en 1280 × 720 (A137, A145)</text>
+  <rect class="n-red" x="50" y="1156" width="150" height="160"/>
+  <rect class="n-dark" x="200" y="1156" width="150" height="80"/>
+  <rect class="n-light" x="200" y="1236" width="150" height="80"/>
+  <text class="nlabel light" x="125" y="1240" text-anchor="middle">640</text>
+  <text class="nlabel light" x="275" y="1200" text-anchor="middle">640</text>
+  <text class="small" x="200" y="1332" text-anchor="middle">50 % (predeterminado)</text>
+  <rect class="n-red" x="380" y="1156" width="180" height="160"/>
+  <rect class="n-dark" x="560" y="1156" width="120" height="80"/>
+  <rect class="n-light" x="560" y="1236" width="120" height="80"/>
+  <text class="nlabel light" x="470" y="1240" text-anchor="middle">768</text>
+  <text class="nlabel light" x="620" y="1200" text-anchor="middle">512</text>
+  <text class="small" x="530" y="1332" text-anchor="middle">master_percent = 60</text>
+
+  <rect class="frame" x="710" y="1108" width="660" height="230" rx="8"/>
+  <text class="h" x="728" y="1138">5b · CRIMSON_RULES (F11, obsoleta) frente a [[rules]]</text>
+  <text class="small" x="728" y="1170">• <tspan font-weight="700">Sin definir:</tspan> se aplican las [[rules]] del archivo.</text>
+  <text class="small" x="728" y="1198">• <tspan font-weight="700">Definida y válida:</tspan> sustituye por completo a [[rules]]</text>
+  <text class="small" x="740" y="1216">(sin fusionar), con aviso de obsolescencia. Vacía: ninguna regla.</text>
+  <text class="small" x="728" y="1244">• <tspan font-weight="700">Definida e inválida:</tspan> como en F11, «se continúa sin</text>
+  <text class="small" x="740" y="1262">reglas»; tampoco se usan las del archivo.</text>
+  <text class="small" x="728" y="1290">• El archivo se valida entero antes: una [[rules]] inválida</text>
+  <text class="small" x="740" y="1308">da 15 aunque CRIMSON_RULES fuera a sustituirla.</text>
+
+  <!-- 6. Aplazado -->
+  <rect class="deferred" x="30" y="1356" width="1340" height="124" rx="8"/>
+  <text class="h muted" x="48" y="1386">6 · No configurable o aplazado (no se presenta como implementado)</text>
+  <text class="small" x="48" y="1414">• <tspan font-weight="700">Recarga en caliente:</tspan> aplazada hasta la IPC (o un manejador de señales); la Config inmutable y la tabla de atajos reconstruible la preparan.</text>
+  <text class="small" x="48" y="1438">• Sin claves para funciones inexistentes: bordes, márgenes, colores, ratón, políticas de foco, otros diseños, scratchpads, geometría en reglas.</text>
+  <text class="small" x="48" y="1462">• Fijos a propósito: salvaguardas (:0, token, marca, otro WM), saneado del entorno de los hijos, 8 escritorios, políticas ICCCM/EWMH y límites internos.</text>
+</svg>

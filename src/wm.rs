@@ -67,6 +67,7 @@ use crate::clients::{
     self, Class, Direction, Disposition, FixedKind, Frame, InputModel, Kind, Layer, Restore,
     WindowInfo,
 };
+use crate::config::Config;
 use crate::display::Target;
 use crate::error::Fatal;
 use crate::ewmh::{
@@ -120,16 +121,16 @@ const POINTER_ROOT: Window = 1;
 /// `target` es el display validado por la capa 1: los programas lanzados
 /// reciben ese `DISPLAY`.
 ///
-/// `window_rules`: las reglas ya validadas de `CRIMSON_RULES` (ADR 0013),
-/// posiblemente ninguna.
+/// `config`: la configuración ya validada (ADR 0014), con las reglas de
+/// ventanas efectivas (ADR 0013), posiblemente ninguna.
 pub fn run(
     conn: &impl Connection,
     screen: &Screen,
     target: &Target,
-    window_rules: Vec<Rule>,
+    config: Config,
 ) -> Result<(), Fatal> {
-    let bindings = keys::grab_bindings(conn, screen.root)?;
-    let launcher = Launcher::new(target);
+    let bindings = keys::grab_bindings(conn, screen.root, &config.bindings)?;
+    let launcher = Launcher::new(target, config.programs);
     let atoms = Atoms::new(conn)
         .map_err(Fatal::lost)?
         .reply()
@@ -153,7 +154,8 @@ pub fn run(
         root: screen.root,
         screen: physical,
         work: physical,
-        rules: window_rules,
+        master_percent: config.master_percent,
+        rules: config.rules,
         types,
         atoms,
         workspaces: Workspaces::default(),
@@ -321,6 +323,8 @@ struct Wm<'c, C: Connection> {
     /// los paneles. Se deriva de `Workspaces::insets` en `update_work_area`
     /// y solo se guarda para saber cuándo cambia.
     work: Rect,
+    /// Proporción de la columna maestra (ADR 0014), fija desde el arranque.
+    master_percent: u8,
     /// Reglas de ventanas (ADR 0013), leídas una vez al arrancar.
     rules: Vec<Rule>,
     atoms: Atoms,
@@ -2382,12 +2386,12 @@ impl<C: Connection> Wm<'_, C> {
     /// Geometría del plan de un escritorio, sin tocar el apilamiento. Sirve
     /// también para los ocultos (salida normal).
     fn place(&mut self, desk: usize) -> Result<(), Fatal> {
-        let (work, screen) = (self.work, self.screen);
+        let (work, screen, percent) = (self.work, self.screen, self.master_percent);
         let Some(clients) = self.workspaces.desk_mut(desk) else {
             return Ok(());
         };
         let mut changed = Vec::new();
-        for (window, rect) in clients.plan(work, screen) {
+        for (window, rect) in clients.plan(work, screen, percent) {
             if clients.set_geometry(window, rect) {
                 changed.push((window, rect));
             }

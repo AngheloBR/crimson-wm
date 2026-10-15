@@ -4,6 +4,11 @@
   `feat/f11-window-rules`. Ver «Resultados de las pruebas de aceptación de
   F11».
 - **Fecha:** 2026-10-14
+- **Actualización F12 (2026-10-15):** las reglas se escriben en
+  `[[rules]]` del archivo de configuración (ADR 0014), con la misma
+  semántica y el mismo evaluador. `CRIMSON_RULES` queda **obsoleta**: si
+  está definida, sustituye a las del archivo con un aviso; si es inválida,
+  el WM arranca sin reglas, como aquí.
 
 ![Captura real en Xvfb: con F10, cuatro ventanas en mosaico; con F11 y dos reglas, Viewer queda flotante y Chat va al escritorio 2, donde aparece sola](../images/crimson-wm-f11-comparison.png)
 

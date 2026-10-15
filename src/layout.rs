@@ -5,8 +5,13 @@
 //! tamaños `CARD16`), así que ningún resultado queda fuera de su rango, y
 //! ningún tamaño es 0, que X11 rechaza con `BadValue`.
 
-/// Porcentaje del ancho que ocupa la columna maestra (fijo en F2).
-pub const MASTER_PERCENT: u32 = 50;
+/// Porcentaje del ancho que ocupa la columna maestra si la configuración no
+/// lo cambia (el valor fijo de F2 a F11).
+pub const DEFAULT_MASTER_PERCENT: u8 = 50;
+/// Límites de `[layout] master_percent` (ADR 0014): ninguna columna queda
+/// por debajo del 10 % del ancho.
+pub const MIN_MASTER_PERCENT: u8 = 10;
+pub const MAX_MASTER_PERCENT: u8 = 90;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
@@ -124,7 +129,11 @@ pub fn center(width: u16, height: u16, border: u16, over: Rect, area: Rect) -> (
 /// solapes. Solo en casos degenerados (un área de menos de 2 píxeles de ancho
 /// o más ventanas en la pila que píxeles de alto) los rectángulos miden al
 /// menos 1 y se solapan.
-pub fn master_stack(area: Rect, count: usize) -> Vec<Rect> {
+///
+/// `master_percent` es el porcentaje del ancho de la columna maestra; la
+/// configuración lo limita a 10–90, pero cualquier valor da rectángulos
+/// válidos.
+pub fn master_stack(area: Rect, count: usize, master_percent: u8) -> Vec<Rect> {
     let area = Rect {
         width: area.width.max(1),
         height: area.height.max(1),
@@ -134,7 +143,7 @@ pub fn master_stack(area: Rect, count: usize) -> Vec<Rect> {
         0 => Vec::new(),
         1 => vec![area],
         _ => {
-            let (master_width, stack_offset) = split_columns(area.width);
+            let (master_width, stack_offset) = split_columns(area.width, master_percent);
             let stack_x = area.x.saturating_add_unsigned(stack_offset);
             let stack_width = area.width - stack_offset;
 
@@ -156,12 +165,13 @@ pub fn master_stack(area: Rect, count: usize) -> Vec<Rect> {
 
 /// Ancho de la columna maestra y desplazamiento de la pila. Con menos de 2
 /// píxeles ambas columnas ocupan el área completa.
-fn split_columns(width: u16) -> (u16, u16) {
+fn split_columns(width: u16, master_percent: u8) -> (u16, u16) {
     if width < 2 {
         return (width, 0);
     }
-    // MASTER_PERCENT <= 100, así que el resultado cabe en u16.
-    let master = u32::from(width) * MASTER_PERCENT / 100;
+    // Con un porcentaje de hasta 100 el resultado cabe en u16; uno mayor se
+    // recorta con el `clamp`.
+    let master = u32::from(width) * u32::from(master_percent) / 100;
     let master = u16::try_from(master).unwrap_or(width).clamp(1, width - 1);
     (master, master)
 }
@@ -260,22 +270,25 @@ mod tests {
 
     #[test]
     fn sin_ventanas() {
-        assert!(master_stack(SCREEN, 0).is_empty());
+        assert!(master_stack(SCREEN, 0, DEFAULT_MASTER_PERCENT).is_empty());
     }
 
     #[test]
     fn una_ventana_ocupa_el_area() {
-        assert_eq!(master_stack(SCREEN, 1), vec![SCREEN]);
+        assert_eq!(
+            master_stack(SCREEN, 1, DEFAULT_MASTER_PERCENT),
+            vec![SCREEN]
+        );
     }
 
     #[test]
     fn dos_y_tres_ventanas() {
         assert_eq!(
-            master_stack(SCREEN, 2),
+            master_stack(SCREEN, 2, DEFAULT_MASTER_PERCENT),
             vec![rect(0, 0, 640, 720), rect(640, 0, 640, 720)]
         );
         assert_eq!(
-            master_stack(SCREEN, 3),
+            master_stack(SCREEN, 3, DEFAULT_MASTER_PERCENT),
             vec![
                 rect(0, 0, 640, 720),
                 rect(640, 0, 640, 360),
@@ -287,7 +300,7 @@ mod tests {
     #[test]
     fn tamanos_impares() {
         assert_eq!(
-            master_stack(rect(0, 0, 1279, 719), 3),
+            master_stack(rect(0, 0, 1279, 719), 3, DEFAULT_MASTER_PERCENT),
             vec![
                 rect(0, 0, 639, 719),
                 rect(639, 0, 640, 360),
@@ -311,7 +324,7 @@ mod tests {
     #[test]
     fn area_desplazada() {
         assert_eq!(
-            master_stack(rect(-10, 20, 100, 50), 3),
+            master_stack(rect(-10, 20, 100, 50), 3, DEFAULT_MASTER_PERCENT),
             vec![
                 rect(-10, 20, 50, 50),
                 rect(40, 20, 50, 25),
@@ -323,15 +336,18 @@ mod tests {
     #[test]
     fn casos_degenerados_sin_tamanos_nulos() {
         // Área vacía: se trata como 1×1.
-        assert_eq!(master_stack(rect(0, 0, 0, 0), 1), vec![rect(0, 0, 1, 1)]);
+        assert_eq!(
+            master_stack(rect(0, 0, 0, 0), 1, DEFAULT_MASTER_PERCENT),
+            vec![rect(0, 0, 1, 1)]
+        );
         // Un píxel de ancho: las columnas se solapan.
         assert_eq!(
-            master_stack(rect(0, 0, 1, 10), 2),
+            master_stack(rect(0, 0, 1, 10), 2, DEFAULT_MASTER_PERCENT),
             vec![rect(0, 0, 1, 10), rect(0, 0, 1, 10)]
         );
         // Más ventanas en la pila que píxeles de alto.
         assert_eq!(
-            master_stack(rect(0, 0, 4, 2), 5),
+            master_stack(rect(0, 0, 4, 2), 5, DEFAULT_MASTER_PERCENT),
             vec![
                 rect(0, 0, 2, 2),
                 rect(2, 0, 2, 1),
@@ -344,7 +360,11 @@ mod tests {
 
     #[test]
     fn coordenadas_extremas_sin_desbordamiento() {
-        let rects = master_stack(rect(i16::MAX - 1, i16::MAX - 1, u16::MAX, u16::MAX), 4);
+        let rects = master_stack(
+            rect(i16::MAX - 1, i16::MAX - 1, u16::MAX, u16::MAX),
+            4,
+            DEFAULT_MASTER_PERCENT,
+        );
         assert_eq!(rects.len(), 4);
         for r in &rects {
             assert!(r.width >= 1 && r.height >= 1, "{r:?}");
@@ -353,14 +373,18 @@ mod tests {
         assert_eq!(rects[1].x, i16::MAX);
         assert_eq!(rects[3].y, i16::MAX);
 
-        let rects = master_stack(rect(i16::MIN, i16::MIN, u16::MAX, u16::MAX), 3);
+        let rects = master_stack(
+            rect(i16::MIN, i16::MIN, u16::MAX, u16::MAX),
+            3,
+            DEFAULT_MASTER_PERCENT,
+        );
         assert_eq!(rects[1].x, -1);
         assert_eq!(rects[2].y, 0);
     }
 
     #[test]
     fn muchas_ventanas() {
-        let rects = master_stack(SCREEN, 10_000);
+        let rects = master_stack(SCREEN, 10_000, DEFAULT_MASTER_PERCENT);
         assert_eq!(rects.len(), 10_000);
         assert!(rects.iter().all(|r| r.width >= 1 && r.height >= 1));
         assert!(rects.iter().all(|r| r.y >= 0 && r.y < 720));
@@ -380,30 +404,101 @@ mod tests {
     }
 
     /// Para tamaños no degenerados, los rectángulos quedan dentro del área,
-    /// no se solapan y la cubren por completo.
+    /// no se solapan y la cubren por completo, con cualquier proporción
+    /// admitida.
     #[test]
     fn cubren_el_area_sin_solapes() {
-        for width in 2..=24u16 {
-            for height in 1..=24u16 {
-                for count in 1..=usize::from(height) + 1 {
-                    let area = rect(3, 5, width, height);
-                    let rects = master_stack(area, count);
-                    assert_eq!(rects.len(), count);
-                    let mut covered = 0u32;
-                    for (i, r) in rects.iter().enumerate() {
-                        assert!(r.width >= 1 && r.height >= 1);
-                        assert!(r.x >= area.x && r.y >= area.y);
-                        assert!(i32::from(r.x) + i32::from(r.width) <= 3 + i32::from(width));
-                        assert!(i32::from(r.y) + i32::from(r.height) <= 5 + i32::from(height));
-                        for other in &rects[i + 1..] {
-                            assert!(!overlaps(r, other), "{area:?} {count}: {r:?} {other:?}");
-                        }
-                        covered += u32::from(r.width) * u32::from(r.height);
+        for percent in [
+            MIN_MASTER_PERCENT,
+            33,
+            DEFAULT_MASTER_PERCENT,
+            60,
+            MAX_MASTER_PERCENT,
+        ] {
+            for width in 2..=24u16 {
+                for height in 1..=24u16 {
+                    for count in 1..=usize::from(height) + 1 {
+                        check_cover(rect(3, 5, width, height), count, percent);
                     }
-                    assert_eq!(covered, u32::from(width) * u32::from(height));
                 }
             }
         }
+    }
+
+    fn check_cover(area: Rect, count: usize, percent: u8) {
+        let rects = master_stack(area, count, percent);
+        assert_eq!(rects.len(), count);
+        let mut covered = 0u32;
+        for (i, r) in rects.iter().enumerate() {
+            assert!(r.width >= 1 && r.height >= 1);
+            assert!(r.x >= area.x && r.y >= area.y);
+            assert!(
+                i32::from(r.x) + i32::from(r.width) <= i32::from(area.x) + i32::from(area.width)
+            );
+            assert!(
+                i32::from(r.y) + i32::from(r.height) <= i32::from(area.y) + i32::from(area.height)
+            );
+            for other in &rects[i + 1..] {
+                assert!(
+                    !overlaps(r, other),
+                    "{area:?} {count} {percent}: {r:?} {other:?}"
+                );
+            }
+            covered += u32::from(r.width) * u32::from(r.height);
+        }
+        assert_eq!(covered, u32::from(area.width) * u32::from(area.height));
+    }
+
+    // U24: proporción configurable (ADR 0014).
+
+    #[test]
+    fn proporcion_de_la_maestra() {
+        // 60 %: 768 + 512 en 1280.
+        assert_eq!(
+            master_stack(SCREEN, 2, 60),
+            vec![rect(0, 0, 768, 720), rect(768, 0, 512, 720)]
+        );
+        assert_eq!(
+            master_stack(SCREEN, 3, 60),
+            vec![
+                rect(0, 0, 768, 720),
+                rect(768, 0, 512, 360),
+                rect(768, 360, 512, 360)
+            ]
+        );
+        // Límites exactos de la configuración: 10 % y 90 %.
+        assert_eq!(
+            master_stack(SCREEN, 2, MIN_MASTER_PERCENT),
+            vec![rect(0, 0, 128, 720), rect(128, 0, 1152, 720)]
+        );
+        assert_eq!(
+            master_stack(SCREEN, 2, MAX_MASTER_PERCENT),
+            vec![rect(0, 0, 1152, 720), rect(1152, 0, 128, 720)]
+        );
+        // Una sola ventana ocupa el área con cualquier proporción.
+        assert_eq!(master_stack(SCREEN, 1, 60), vec![SCREEN]);
+        // Redondeo hacia abajo: 1279 × 60 % = 767,4.
+        assert_eq!(master_stack(rect(0, 0, 1279, 10), 2, 60)[0].width, 767);
+    }
+
+    #[test]
+    fn proporciones_fuera_de_rango_no_dan_tamanos_nulos() {
+        // La configuración no las admite, pero la geometría las tolera.
+        for percent in [0, 1, 99, 100, u8::MAX] {
+            let rects = master_stack(SCREEN, 2, percent);
+            assert!(rects.iter().all(|r| r.width >= 1), "{percent}: {rects:?}");
+            assert_eq!(
+                u32::from(rects[0].width) + u32::from(rects[1].width),
+                1280,
+                "{percent}"
+            );
+        }
+    }
+
+    #[test]
+    fn la_proporcion_predeterminada_es_la_de_f11() {
+        assert_eq!(DEFAULT_MASTER_PERCENT, 50);
+        assert!((MIN_MASTER_PERCENT..=MAX_MASTER_PERCENT).contains(&DEFAULT_MASTER_PERCENT));
     }
 
     // U22: área de trabajo (ADR 0012).

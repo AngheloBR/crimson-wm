@@ -1,0 +1,217 @@
+# Crimson WM — example configuration (ADR 0014, docs/configuration.md)
+#
+# Copy it to ~/.config/crimson/wm.toml (or $XDG_CONFIG_HOME/crimson/wm.toml)
+# and edit it. This file reproduces the built-in defaults exactly: loading it
+# gives the same behaviour as having no configuration file at all (a unit
+# test checks it).
+#
+# Validate it without starting the WM or touching any X server:
+#     crimson-wm --check-config ~/.config/crimson/wm.toml
+#
+# The file is read once, at startup. There is no live reload yet: restart the
+# WM to apply changes. An invalid file stops the WM before it connects to X
+# (exit code 15); nothing is ever applied partially.
+#
+# The file must not be writable by group or others (chmod go-w): it decides
+# which programs run with your permissions.
+
+[layout]
+# Width of the master column, in percent of the work area (10–90).
+master_percent = 50
+
+# Programs started by `launch` key bindings. Defining [programs] replaces the
+# whole default table (no merging). Names: a lowercase letter, then lowercase
+# letters, digits, "_" or "-" (32 at most).
+#
+# argv is run directly, without a shell: no pipes, no $VARIABLES, no ~.
+# argv[0] is looked up in the WM's PATH unless it is an absolute path.
+[programs.terminal]
+argv = ["kitty"]
+
+[programs.lanzador]
+argv = ["rofi", "-show", "drun"]
+
+[programs.archivos]
+argv = ["thunar"]
+
+[programs.navegador]
+argv = ["firefox"]
+
+[programs.editor]
+argv = ["kitty", "-e", "nvim"]
+
+[programs.capturas]
+argv = ["flameshot", "gui"]
+
+# Key bindings. Defining [[keybindings]] replaces the whole default table, and
+# it must contain at least one `exit` binding.
+#
+# keys: modifiers joined with "+", then one key. Modifiers: Shift, Control
+# (Ctrl), Mod1 (Alt), Mod4 (Super). Typing keys (letters, digits, Return,
+# space, arrows…) need Control, Mod1 or Mod4; function keys, Print and media
+# keys may be used alone. Caps Lock and Num Lock are always ignored.
+#
+# Actions: exit, focus_next, focus_prev, zoom, launch (program = "name"),
+# view_desktop and move_to_desktop (desktop = 1–8), view_previous, close,
+# kill, fullscreen.
+
+[[keybindings]]
+keys = "Mod4+Shift+Escape"
+action = "exit"
+
+[[keybindings]]
+keys = "Mod4+j"
+action = "focus_next"
+
+[[keybindings]]
+keys = "Mod4+k"
+action = "focus_prev"
+
+[[keybindings]]
+keys = "Mod4+Shift+Return"
+action = "zoom"
+
+[[keybindings]]
+keys = "Mod4+Return"
+action = "launch"
+program = "terminal"
+
+[[keybindings]]
+keys = "Mod4+d"
+action = "launch"
+program = "lanzador"
+
+[[keybindings]]
+keys = "Mod4+e"
+action = "launch"
+program = "archivos"
+
+[[keybindings]]
+keys = "Mod4+b"
+action = "launch"
+program = "navegador"
+
+[[keybindings]]
+keys = "Mod4+n"
+action = "launch"
+program = "editor"
+
+[[keybindings]]
+keys = "Print"
+action = "launch"
+program = "capturas"
+
+[[keybindings]]
+keys = "Mod4+1"
+action = "view_desktop"
+desktop = 1
+
+[[keybindings]]
+keys = "Mod4+2"
+action = "view_desktop"
+desktop = 2
+
+[[keybindings]]
+keys = "Mod4+3"
+action = "view_desktop"
+desktop = 3
+
+[[keybindings]]
+keys = "Mod4+4"
+action = "view_desktop"
+desktop = 4
+
+[[keybindings]]
+keys = "Mod4+5"
+action = "view_desktop"
+desktop = 5
+
+[[keybindings]]
+keys = "Mod4+6"
+action = "view_desktop"
+desktop = 6
+
+[[keybindings]]
+keys = "Mod4+7"
+action = "view_desktop"
+desktop = 7
+
+[[keybindings]]
+keys = "Mod4+8"
+action = "view_desktop"
+desktop = 8
+
+[[keybindings]]
+keys = "Mod4+Shift+1"
+action = "move_to_desktop"
+desktop = 1
+
+[[keybindings]]
+keys = "Mod4+Shift+2"
+action = "move_to_desktop"
+desktop = 2
+
+[[keybindings]]
+keys = "Mod4+Shift+3"
+action = "move_to_desktop"
+desktop = 3
+
+[[keybindings]]
+keys = "Mod4+Shift+4"
+action = "move_to_desktop"
+desktop = 4
+
+[[keybindings]]
+keys = "Mod4+Shift+5"
+action = "move_to_desktop"
+desktop = 5
+
+[[keybindings]]
+keys = "Mod4+Shift+6"
+action = "move_to_desktop"
+desktop = 6
+
+[[keybindings]]
+keys = "Mod4+Shift+7"
+action = "move_to_desktop"
+desktop = 7
+
+[[keybindings]]
+keys = "Mod4+Shift+8"
+action = "move_to_desktop"
+desktop = 8
+
+[[keybindings]]
+keys = "Mod4+Tab"
+action = "view_previous"
+
+[[keybindings]]
+keys = "Mod4+w"
+action = "close"
+
+[[keybindings]]
+keys = "Mod4+Shift+w"
+action = "kill"
+
+[[keybindings]]
+keys = "Mod4+f"
+action = "fullscreen"
+
+# Window rules (same semantics as F11's CRIMSON_RULES, ADR 0013). None by
+# default; uncomment and adapt. Conditions (all must match): instance and
+# class (exact WM_CLASS strings), type (normal, dialog, utility, toolbar,
+# splash, menu, dropdown_menu, popup_menu, tooltip, combo, dnd) and transient
+# (true/false). Actions: desktop (1–8), floating, nofocus, fullscreen. For
+# each action, the first matching rule that sets it wins.
+#
+# If the CRIMSON_RULES environment variable is set (deprecated), it replaces
+# these rules entirely.
+#
+# [[rules]]
+# class = "Firefox"
+# desktop = 2
+#
+# [[rules]]
+# instance = "pavucontrol"
+# floating = true
+# nofocus = true

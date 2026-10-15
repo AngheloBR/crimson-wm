@@ -7,6 +7,11 @@
 //! `Command` (el del WM no se modifica): `DISPLAY` se fija al display
 //! validado y se eliminan el token del sandbox (ADR 0003), `WINDOWID`,
 //! `DESKTOP_STARTUP_ID` y las reglas del WM (`CRIMSON_RULES`, ADR 0013).
+//!
+//! La tabla de programas sale de la configuración (ADR 0014), ya validada;
+//! sin archivo, es la de F4 (`default_programs`). La configuración solo
+//! elige el argv: no hay shell, expansión, cambios de entorno, de directorio
+//! ni de usuario.
 
 use std::io;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
@@ -21,16 +26,26 @@ use crate::rules::RULES_VAR;
 use crate::safeguards::TOKEN_VAR;
 
 /// Programa de un atajo de lanzamiento.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     /// Nombre para los registros. De argv solo se registra argv[0]: los
     /// argumentos podrían contener datos privados.
-    pub name: &'static str,
-    /// argv[0] se busca en el PATH del WM.
-    pub argv: &'static [&'static str],
+    pub name: String,
+    /// argv[0] se busca en el PATH del WM, salvo que sea una ruta absoluta.
+    pub argv: Vec<String>,
 }
 
-// Índices de PROGRAMS que usan los atajos (keys.rs).
+impl Program {
+    fn new(name: &str, argv: &[&str]) -> Self {
+        Self {
+            name: name.to_string(),
+            argv: argv.iter().map(|a| (*a).to_string()).collect(),
+        }
+    }
+}
+
+// Índices de `default_programs` que usan los atajos predeterminados
+// (keys.rs).
 pub const TERMINAL: usize = 0;
 pub const LAUNCHER: usize = 1;
 pub const FILES: usize = 2;
@@ -38,34 +53,18 @@ pub const BROWSER: usize = 3;
 pub const EDITOR: usize = 4;
 pub const SCREENSHOT: usize = 5;
 
-/// Tabla fija de F4. Una configuración futura la sustituirá sin cambiar el
-/// resto del módulo.
-pub const PROGRAMS: &[Program] = &[
-    Program {
-        name: "terminal",
-        argv: &["kitty"],
-    },
-    Program {
-        name: "lanzador",
-        argv: &["rofi", "-show", "drun"],
-    },
-    Program {
-        name: "archivos",
-        argv: &["thunar"],
-    },
-    Program {
-        name: "navegador",
-        argv: &["firefox"],
-    },
-    Program {
-        name: "editor",
-        argv: &["kitty", "-e", "nvim"],
-    },
-    Program {
-        name: "capturas",
-        argv: &["flameshot", "gui"],
-    },
-];
+/// Tabla predeterminada, la de F4 a F11: la que se usa sin archivo de
+/// configuración o si este no define `[programs]`.
+pub fn default_programs() -> Vec<Program> {
+    vec![
+        Program::new("terminal", &["kitty"]),
+        Program::new("lanzador", &["rofi", "-show", "drun"]),
+        Program::new("archivos", &["thunar"]),
+        Program::new("navegador", &["firefox"]),
+        Program::new("editor", &["kitty", "-e", "nvim"]),
+        Program::new("capturas", &["flameshot", "gui"]),
+    ]
+}
 
 /// Variables que no pasan a los hijos: el token del sandbox, las que
 /// describen desde dónde se lanzó el WM, no al hijo, y las reglas del WM.
@@ -80,28 +79,32 @@ pub struct Launcher {
     /// `:N.S` del display validado (capa 1 del ADR 0003).
     display: String,
     home: Option<PathBuf>,
+    /// Programas de la configuración. Cada hilo de supervisión comparte el
+    /// suyo: la tabla no cambia mientras el WM está en marcha.
+    programs: Vec<Arc<Program>>,
     live: Arc<AtomicUsize>,
 }
 
 impl Launcher {
-    pub fn new(target: &Target) -> Self {
+    pub fn new(target: &Target, programs: Vec<Program>) -> Self {
         Self {
             display: format!(":{}.{}", target.display, target.screen),
             home: std::env::var_os("HOME").map(PathBuf::from),
+            programs: programs.into_iter().map(Arc::new).collect(),
             live: Arc::default(),
         }
     }
 
-    /// Lanza el programa `index` de PROGRAMS sin esperar. Nunca falla: los
+    /// Lanza el programa `index` de la tabla sin esperar. Nunca falla: los
     /// errores se registran y el WM sigue en marcha.
     pub fn launch(&self, index: usize) {
-        match PROGRAMS.get(index) {
-            Some(program) => self.start(program),
+        match self.programs.get(index) {
+            Some(program) => self.start(Arc::clone(program)),
             None => eprintln!("crimson-wm: no hay ningún programa {index}"),
         }
     }
 
-    fn start(&self, program: &'static Program) {
+    fn start(&self, program: Arc<Program>) {
         let Some(slot) = Slot::reserve(&self.live) else {
             eprintln!(
                 "crimson-wm: no se lanza «{}»: ya hay {MAX_LIVE} programas en supervisión",
@@ -111,10 +114,11 @@ impl Launcher {
         };
         let display = self.display.clone();
         let home = self.home.clone();
+        let shared = Arc::clone(&program);
         let spawned = thread::Builder::new()
             .name("crimson-launch".into())
             .stack_size(STACK_SIZE)
-            .spawn(move || supervise(program, &display, home.as_deref(), slot));
+            .spawn(move || supervise(&shared, &display, home.as_deref(), slot));
         // Si el hilo no se crea, la reserva se libera con el cierre y no se
         // lanza nada: nunca queda un hijo sin nadie que lo espere.
         if let Err(e) = spawned {
@@ -135,7 +139,7 @@ fn supervise(program: &Program, display: &str, home: Option<&Path>, _slot: Slot)
             eprintln!(
                 "crimson-wm: no se pudo lanzar «{}» ({}): {e}",
                 program.name,
-                program.argv.first().unwrap_or(&"")
+                program.argv.first().map_or("", String::as_str)
             );
             return;
         }
@@ -229,6 +233,7 @@ mod tests {
 
     #[test]
     fn la_tabla_tiene_los_seis_programas() {
+        let programs = default_programs();
         let expected: [(usize, &str, &[&str]); 6] = [
             (TERMINAL, "terminal", &["kitty"]),
             (LAUNCHER, "lanzador", &["rofi", "-show", "drun"]),
@@ -237,14 +242,14 @@ mod tests {
             (EDITOR, "editor", &["kitty", "-e", "nvim"]),
             (SCREENSHOT, "capturas", &["flameshot", "gui"]),
         ];
-        assert_eq!(PROGRAMS.len(), expected.len());
+        assert_eq!(programs.len(), expected.len());
         for (index, name, argv) in expected {
-            assert_eq!(PROGRAMS[index].name, name);
-            assert_eq!(PROGRAMS[index].argv, argv, "{name}");
+            assert_eq!(programs[index].name, name);
+            assert_eq!(programs[index].argv, argv, "{name}");
         }
         // Ningún argv vacío ni con cadenas vacías; argv[0] es un nombre
         // simple, que se busca en el PATH.
-        for program in PROGRAMS {
+        for program in &programs {
             assert!(!program.argv.is_empty(), "{}", program.name);
             assert!(program.argv.iter().all(|a| !a.is_empty()));
             assert!(!program.argv[0].contains('/'), "{}", program.name);
@@ -253,16 +258,13 @@ mod tests {
 
     #[test]
     fn orden_con_argv_exacto_y_sin_shell() {
-        let editor = command(&PROGRAMS[EDITOR], ":5.0", Path::new("/")).unwrap();
+        let editor = command(&default_programs()[EDITOR], ":5.0", Path::new("/")).unwrap();
         assert_eq!(editor.get_program(), "kitty");
         let args: Vec<_> = editor.get_args().collect();
         assert_eq!(args, ["-e", "nvim"]);
 
         // Los metacaracteres llegan literalmente como un único argumento.
-        let literal = Program {
-            name: "prueba",
-            argv: &["echo", "$HOME; ~ *"],
-        };
+        let literal = Program::new("prueba", &["echo", "$HOME; ~ *"]);
         let echo = command(&literal, ":5.0", Path::new("/")).unwrap();
         assert_eq!(echo.get_program(), "echo");
         assert_eq!(echo.get_args().collect::<Vec<_>>(), ["$HOME; ~ *"]);
@@ -270,7 +272,7 @@ mod tests {
 
     #[test]
     fn entorno_del_hijo() {
-        let terminal = command(&PROGRAMS[TERMINAL], ":7.1", Path::new("/")).unwrap();
+        let terminal = command(&default_programs()[TERMINAL], ":7.1", Path::new("/")).unwrap();
         let envs = envs(&terminal);
         for var in [TOKEN_VAR, "WINDOWID", "DESKTOP_STARTUP_ID", RULES_VAR] {
             assert!(
@@ -286,29 +288,26 @@ mod tests {
 
     #[test]
     fn display_del_target_validado() {
-        let launcher = Launcher::new(&Target {
-            display: 12,
-            screen: 0,
-        });
+        let launcher = Launcher::new(
+            &Target {
+                display: 12,
+                screen: 0,
+            },
+            default_programs(),
+        );
         assert_eq!(launcher.display, ":12.0");
     }
 
     #[test]
     fn argv_vacio_es_un_error() {
-        let empty = Program {
-            name: "vacío",
-            argv: &[],
-        };
+        let empty = Program::new("vacío", &[]);
         let error = command(&empty, ":5.0", Path::new("/")).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
     fn ejecutable_inexistente_no_crea_ningun_proceso() {
-        let missing = Program {
-            name: "prueba",
-            argv: &["/nonexistent/crimson-wm-prueba"],
-        };
+        let missing = Program::new("prueba", &["/nonexistent/crimson-wm-prueba"]);
         let error = command(&missing, ":5.0", Path::new("/"))
             .unwrap()
             .spawn()
@@ -359,17 +358,14 @@ mod tests {
     /// supervisión lo recoja y libere su reserva.
     #[test]
     fn recoge_el_hijo_al_terminar() {
-        static TRUE: Program = Program {
-            name: "prueba",
-            argv: &["/bin/true"],
-        };
         let launcher = Launcher {
             display: ":5.0".into(),
             home: None,
+            programs: vec![Arc::new(Program::new("prueba", &["/bin/true"]))],
             live: Arc::default(),
         };
-        launcher.start(&TRUE);
-        launcher.start(&TRUE);
+        launcher.launch(0);
+        launcher.launch(0);
         let deadline = Instant::now() + Duration::from_secs(5);
         while launcher.live.load(Ordering::Relaxed) != 0 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));

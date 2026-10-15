@@ -44,6 +44,15 @@
   cada recurso se atribuye: los propios que persisten siempre fallan, y los
   ajenos solo se aceptan si todos los Xvfb del arnés están anotados (ADR
   0010, «Aislamiento de las comprobaciones de residuos»).
+- **Actualización F12 (2026-10-15):** la configuración TOML (ADR 0014) se
+  lee después de las capas 1 y 2 y antes de conectar, y no puede cambiar
+  ninguna capa. Nuevo código de salida 15 para una configuración ilegible o
+  inválida. Los atajos de la configuración siguen la regla del código 14, y
+  dos atajos en el mismo código de tecla también dan 14 si el segundo es de
+  control. `run_bin` (`f1/lib.sh`) fija `HOME` y `XDG_CONFIG_HOME` a un
+  directorio vacío de la prueba, y `start_wm` acepta argumentos del
+  binario; la regresión de F1 con el binario de F12 dio 46 OK, 0 FALLA y
+  1 OMITIDA.
 
 ## Contexto
 
@@ -283,6 +292,7 @@ opciones de configuración** que desactiven o relajen estas salvaguardas.
 | 12 | Ya hay otro gestor (`_NET_SUPPORTING_WM_CHECK` o `BadAccess`) |
 | 13 | Se perdió la conexión X durante la ejecución |
 | 14 | Error de protocolo inesperado al arrancar: por ejemplo, la pantalla indicada no existe, ningún código de tecla produce la tecla de un atajo o falla la captura de un atajo (el de salida, desde F3 los de foco del ADR 0005 y desde F5 los de escritorio del ADR 0007, desde F6 los de cierre del ADR 0008 y desde F7 el de pantalla completa del ADR 0009) |
+| 15 | Desde F12 (ADR 0014): archivo de configuración ilegible o inválido, detectado antes de conectar; también `--check-config` con una configuración inválida |
 | 101 | `panic` de Rust con `panic = "unwind"` (el valor por defecto, que el proyecto no cambia). Se considera un bug; A9 comprueba que no ocurra |
 
 - **Errores X durante la ejecución:** los debidos a condiciones de carrera

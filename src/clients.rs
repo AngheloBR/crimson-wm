@@ -281,15 +281,16 @@ impl Clients {
     /// de trabajo `work`, y la de pantalla completa, sea del tipo que sea,
     /// con la pantalla física `screen` (ADR 0012). La ventana a pantalla
     /// completa sale del cálculo del mosaico pero conserva su posición en la
-    /// lista: al salir recupera su hueco.
-    pub fn plan(&self, work: Rect, screen: Rect) -> Vec<(Window, Rect)> {
+    /// lista: al salir recupera su hueco. `master_percent` es la proporción
+    /// de la columna maestra (ADR 0014).
+    pub fn plan(&self, work: Rect, screen: Rect, master_percent: u8) -> Vec<(Window, Rect)> {
         let tiled: Vec<Window> = self
             .list
             .iter()
             .filter(|c| c.kind == Kind::Tiled && c.fullscreen.is_none())
             .map(|c| c.window)
             .collect();
-        let rects = layout::master_stack(work, tiled.len());
+        let rects = layout::master_stack(work, tiled.len(), master_percent);
         let mut plan: Vec<(Window, Rect)> = tiled.into_iter().zip(rects).collect();
         plan.extend(self.fullscreen().map(|w| (w, screen)));
         plan
@@ -664,7 +665,7 @@ mod tests {
     fn plan_sin_pantalla_completa() {
         let clients = with(&[(1, TILED), (9, FLOATING), (2, TILED), (3, TILED)]);
         assert_eq!(
-            clients.plan(AREA, AREA),
+            clients.plan(AREA, AREA, layout::DEFAULT_MASTER_PERCENT),
             vec![
                 (1, r(0, 0, 640, 720)),
                 (2, r(640, 0, 640, 360)),
@@ -680,12 +681,15 @@ mod tests {
         clients.get_mut(2).unwrap().fullscreen = Some(Restore { frame: None });
         // Las demás se reparten el mosaico; la de pantalla completa, el área.
         assert_eq!(
-            clients.plan(AREA, AREA),
+            clients.plan(AREA, AREA, layout::DEFAULT_MASTER_PERCENT),
             vec![(1, r(0, 0, 640, 720)), (3, r(640, 0, 640, 720)), (2, AREA)]
         );
         // Al salir recupera su hueco: su posición en la lista no ha cambiado.
         clients.get_mut(2).unwrap().fullscreen = None;
-        assert_eq!(clients.plan(AREA, AREA)[1], (2, r(640, 0, 640, 360)));
+        assert_eq!(
+            clients.plan(AREA, AREA, layout::DEFAULT_MASTER_PERCENT)[1],
+            (2, r(640, 0, 640, 360))
+        );
         assert_eq!(clients.tiled().collect::<Vec<_>>(), vec![1, 2, 3]);
     }
 
@@ -698,7 +702,10 @@ mod tests {
                 border: 2,
             }),
         });
-        assert_eq!(clients.plan(AREA, AREA), vec![(1, AREA), (9, AREA)]);
+        assert_eq!(
+            clients.plan(AREA, AREA, layout::DEFAULT_MASTER_PERCENT),
+            vec![(1, AREA), (9, AREA)]
+        );
         assert_eq!(clients.fullscreen(), Some(9));
         let removed = clients.unmanage(9).unwrap();
         assert!(removed.fullscreen);
@@ -713,7 +720,7 @@ mod tests {
         let work = r(0, 40, 1280, 680);
         let mut clients = with(&[(1, TILED), (9, FLOATING), (2, TILED), (3, TILED)]);
         assert_eq!(
-            clients.plan(work, AREA),
+            clients.plan(work, AREA, layout::DEFAULT_MASTER_PERCENT),
             vec![
                 (1, r(0, 40, 640, 680)),
                 (2, r(640, 40, 640, 340)),
@@ -722,7 +729,7 @@ mod tests {
         );
         clients.get_mut(2).unwrap().fullscreen = Some(Restore { frame: None });
         assert_eq!(
-            clients.plan(work, AREA),
+            clients.plan(work, AREA, layout::DEFAULT_MASTER_PERCENT),
             vec![
                 (1, r(0, 40, 640, 680)),
                 (3, r(640, 40, 640, 680)),
@@ -730,7 +737,12 @@ mod tests {
             ]
         );
         // Las flotantes no están en el plan: nunca se mueven por el área.
-        assert!(clients.plan(work, AREA).iter().all(|&(w, _)| w != 9));
+        assert!(
+            clients
+                .plan(work, AREA, layout::DEFAULT_MASTER_PERCENT)
+                .iter()
+                .all(|&(w, _)| w != 9)
+        );
     }
 
     #[test]

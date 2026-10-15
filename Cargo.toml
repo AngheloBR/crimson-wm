@@ -19,6 +19,12 @@ publish = false
 # Solo el protocolo base de X11 en F1; las extensiones se activan cuando
 # una fase las necesite (ver docs/adr/0002-x11rb.md).
 x11rb = { version = "0.14", default-features = false }
+# Ya transitiva de x11rb: apertura no bloqueante de la configuración, sin
+# constantes de plataforma ni unsafe propio. No añade crates ni features.
+rustix = { version = "1.1.5", default-features = false, features = ["fs", "std"] }
+# Analizador TOML por eventos para el archivo de configuración (ADR 0014).
+# Sin las features `unsafe`, `simd` ni `debug`: con `std` solo añade winnow.
+toml_parser = { version = "1.1.5", default-features = false, features = ["std"] }
 
 [lints.rust]
 unsafe_code = "forbid"

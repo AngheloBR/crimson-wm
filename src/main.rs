@@ -1,16 +1,18 @@
-//! Crimson WM, fase F7: mosaico master-stack (ADR 0004), foco por teclado
-//! (ADR 0005), lanzamiento de aplicaciones (ADR 0006), escritorios virtuales
-//! (ADR 0007), compatibilidad ICCCM/EWMH (ADR 0008) y pantalla completa (ADR
-//! 0009). Solo arranca en un servidor X de prueba que supere las
-//! salvaguardas del ADR 0003.
+//! Crimson WM: mosaico master-stack (ADR 0004), foco por teclado (ADR 0005),
+//! lanzamiento de aplicaciones (ADR 0006), escritorios virtuales (ADR 0007),
+//! compatibilidad ICCCM/EWMH (ADR 0008 a 0012), reglas de ventanas (ADR
+//! 0013) y configuración TOML (ADR 0014). Solo arranca en un servidor X de
+//! prueba que supere las salvaguardas del ADR 0003.
 
 mod cli;
 mod clients;
+mod config;
 mod connect;
 mod display;
 mod error;
 mod ewmh;
 mod icccm;
+mod keynames;
 mod keys;
 mod layout;
 mod rules;
@@ -20,6 +22,7 @@ mod wm;
 mod workspaces;
 
 use std::io::Write as _;
+use std::path::Path;
 use std::process::ExitCode;
 
 use x11rb::connection::Connection as _;
@@ -40,7 +43,8 @@ fn main() -> ExitCode {
             );
             Ok(())
         }
-        cli::Command::Run => run(),
+        cli::Command::Check(path) => check(path.as_deref()),
+        cli::Command::Run(path) => run(path.as_deref()),
     });
 
     match result {
@@ -55,28 +59,58 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), Fatal> {
+fn config_error(error: config::Error) -> Fatal {
+    Fatal::Config(format!("configuración rechazada: {error}"))
+}
+
+/// `--check-config`: no lee DISPLAY, XAUTHORITY ni el token del sandbox, no
+/// conecta con X y no lanza nada.
+fn check(path: Option<&Path>) -> Result<(), Fatal> {
+    let lines = config::check(
+        path,
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+        std::env::var_os(rules::RULES_VAR),
+    )
+    .map_err(config_error)?;
+    let mut out = std::io::stdout().lock();
+    for line in lines {
+        let _ = writeln!(out, "crimson-wm: {line}");
+    }
+    Ok(())
+}
+
+fn run(config_path: Option<&Path>) -> Result<(), Fatal> {
     // Capa 1, antes de abrir ninguna conexión. DISPLAY se lee una sola vez.
     let target = display::validate(std::env::var_os("DISPLAY"))?;
     let token = safeguards::sandbox_token(std::env::var_os(safeguards::TOKEN_VAR))?;
-    // Reglas de ventanas (ADR 0013): se leen una vez, antes de conectar. Una
-    // fuente inválida se descarta entera; no detiene el WM ni relaja ninguna
-    // salvaguarda.
-    let window_rules = match rules::load(std::env::var_os(rules::RULES_VAR)) {
-        Ok(list) => {
-            if !list.is_empty() {
-                eprintln!("crimson-wm: {}: {} reglas", rules::RULES_VAR, list.len());
-            }
-            list
-        }
-        Err(error) => {
-            eprintln!(
-                "crimson-wm: {} inválida ({error}): se continúa sin reglas",
-                rules::RULES_VAR
-            );
-            Vec::new()
-        }
-    };
+    // Configuración (ADR 0014): se lee y valida entera una vez, antes de
+    // conectar. Si es inválida, el WM no arranca (código 15) y el servidor
+    // no se toca.
+    let loaded = config::load(
+        config_path,
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+    .map_err(config_error)?;
+    for note in &loaded.notes {
+        eprintln!("crimson-wm: {note}");
+    }
+    match &loaded.source {
+        config::Source::File(_) => eprintln!(
+            "crimson-wm: configuración: {} ({})",
+            loaded.source,
+            loaded.config.summary()
+        ),
+        config::Source::Builtin(_) => eprintln!("crimson-wm: configuración: {}", loaded.source),
+    }
+    // Reglas de ventanas de CRIMSON_RULES (ADR 0013, obsoleta): si está
+    // definida sustituye a las del archivo. Una fuente inválida se descarta
+    // entera; no detiene el WM ni relaja ninguna salvaguarda.
+    let mut wm_config = loaded.config;
+    for note in config::apply_env_rules(&mut wm_config, std::env::var_os(rules::RULES_VAR)) {
+        eprintln!("crimson-wm: {note}");
+    }
 
     let conn = connect::connect(&target)?;
     let setup = conn.setup();
@@ -103,5 +137,5 @@ fn run() -> Result<(), Fatal> {
         screen.root
     );
 
-    wm::run(&conn, screen, &target, window_rules)
+    wm::run(&conn, screen, &target, wm_config)
 }

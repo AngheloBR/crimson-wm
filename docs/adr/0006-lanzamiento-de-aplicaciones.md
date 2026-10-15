@@ -15,6 +15,10 @@
 - **Actualización F11 (2026-10-14):** `CRIMSON_RULES`, la fuente
   provisional de reglas del WM, tampoco pasa a los programas lanzados
   (`REMOVED_VARS`), como el token del sandbox (ADR 0013).
+- **Actualización F12 (2026-10-15):** la tabla de programas y sus atajos
+  se pueden sustituir con `[programs]` y `[[keybindings]]` del archivo de
+  configuración (ADR 0014); sin archivo, son los de esta fase. El modelo de
+  lanzamiento (argv sin shell, entorno saneado, supervisión) no cambia.
 
 ## Contexto
 

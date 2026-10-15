@@ -1,8 +1,10 @@
 //! Reglas de ventanas (ADR 0013): análisis de `CRIMSON_RULES` y evaluación
 //! determinista. Sin E/S: `main.rs` lee la variable una vez al arrancar y
-//! `wm.rs` aplica la decisión al gestionar una ventana.
+//! `wm.rs` aplica la decisión al gestionar una ventana. Las reglas de
+//! `[[rules]]` del archivo de configuración (ADR 0014) se construyen con
+//! las mismas validaciones (`window_type`, `rule`) y se evalúan igual.
 //!
-//! Formato provisional e inestable, que sustituirá una configuración TOML:
+//! Formato provisional y obsoleto desde F12, sustituido por `[[rules]]`:
 //! una regla por línea y cláusulas separadas por `;`. Las líneas vacías y las
 //! que empiezan por `#` se ignoran. Condiciones (se combinan con Y):
 //! `instance=…`, `class=…` (exactas, distinguiendo mayúsculas),
@@ -50,7 +52,8 @@ pub struct Actions {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
-    /// Línea de la fuente (desde 1), para los registros.
+    /// Línea de la fuente (desde 1), para los registros: la de la regla en
+    /// `CRIMSON_RULES` o la de su tabla en el archivo de configuración.
     pub line: usize,
     pub matcher: Matcher,
     pub actions: Actions,
@@ -227,16 +230,7 @@ fn parse_line(line: usize, text: &str) -> Result<Rule, LineError> {
         match key {
             "instance" => matcher.instance = Some(value.as_bytes().to_vec()),
             "class" => matcher.class = Some(value.as_bytes().to_vec()),
-            "type" => {
-                if FIXED_NAMES.contains(&value) {
-                    return Err(LineError::FixedType(value.to_string()));
-                }
-                let found = TYPE_NAMES.iter().find(|(name, _)| *name == value);
-                let Some(&(_, t)) = found else {
-                    return Err(LineError::BadType(value.to_string()));
-                };
-                matcher.window_type = Some(t);
-            }
+            "type" => matcher.window_type = Some(window_type(value)?),
             "transient" => {
                 matcher.transient = Some(match value {
                     "yes" => true,
@@ -258,6 +252,24 @@ fn parse_line(line: usize, text: &str) -> Result<Rule, LineError> {
         }
         seen.push(key);
     }
+    rule(line, matcher, actions)
+}
+
+/// Tipo de ventana que nombra una regla. Los de las ventanas fijas (ADR
+/// 0011) se rechazan: las reglas no se les aplican.
+pub fn window_type(name: &str) -> Result<WindowType, LineError> {
+    if FIXED_NAMES.contains(&name) {
+        return Err(LineError::FixedType(name.to_string()));
+    }
+    TYPE_NAMES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|&(_, t)| t)
+        .ok_or_else(|| LineError::BadType(name.to_string()))
+}
+
+/// Regla completa: al menos una condición y una acción.
+pub fn rule(line: usize, matcher: Matcher, actions: Actions) -> Result<Rule, LineError> {
     if matcher == Matcher::default() {
         return Err(LineError::NoCondition);
     }

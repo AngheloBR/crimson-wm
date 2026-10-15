@@ -10,8 +10,8 @@ the Rust toolchain that Debian ships.
 
 > [!WARNING]
 > **Pre-alpha. Not ready for daily use.** Crimson WM has no mouse support,
-> no configuration file (only an experimental rules variable) and a fixed
-> set of key bindings and programs. By
+> one layout and a small configuration file (key bindings, programs, master
+> width and window rules). By
 > design it **refuses to start on display `:0`** and only runs on test
 > servers that pass its safeguards. Do not try to use it as your session's
 > window manager.
@@ -24,9 +24,9 @@ binary. Only labels were added.*
 
 ## Status
 
-Phases F1–F11 are implemented. In the most recent recorded runs
-(2026-10-14, Debian 13, debug build), all 145 unit tests passed and every
-acceptance battery from F1 to F11 passed. In each battery, one check
+Phases F1–F12 are implemented. In the most recent recorded runs
+(2026-10-15, F12-C, Debian 13, debug build), all 204 unit tests passed and every
+acceptance battery from F1 to F12 passed. In each battery, one check
 is skipped on purpose because it would query the real display `:0`. One
 F3 run failed once while preparing its Xvfb server and passed when
 repeated; the cause has not been determined (see the technical
@@ -46,6 +46,7 @@ changes; see the ADRs for details.
 | F9 | EWMH window types; docks, notifications and desktop windows fixed on all desktops; stacking layers | [ADR 0011](docs/adr/0011-tipos-de-ventana-ewmh.md) |
 | F10 | `_NET_WM_STRUT`, `_NET_WM_STRUT_PARTIAL` and `_NET_WORKAREA`: docks reserve screen edges, tiling uses the work area | [ADR 0012](docs/adr/0012-struts-y-area-de-trabajo.md) |
 | F11 | Window rules by `WM_CLASS`, window type and transiency (initial desktop, floating, no initial focus, fullscreen), from the experimental `CRIMSON_RULES` variable | [ADR 0013](docs/adr/0013-reglas-de-ventanas.md) |
+| F12 | TOML configuration (`crimson/wm.toml`): key bindings, programs, master width and window rules, fully validated at startup; `--config` and `--check-config` | [ADR 0014](docs/adr/0014-configuracion-toml.md) |
 
 ### Key bindings
 
@@ -62,57 +63,72 @@ changes; see the ADRs for details.
 | `Mod4+Return`, `Mod4+d`, `Mod4+e`, `Mod4+b`, `Mod4+n`, `Print` | Launch `kitty`, `rofi -show drun`, `thunar`, `firefox`, `kitty -e nvim`, `flameshot gui` |
 | `Mod4+Shift+Escape` | Quit (provisional binding) |
 
-The programs and bindings are hard-coded for now.
+These are the defaults, used when there is no configuration file. A
+configuration file can replace the whole table (see below).
 
 ### Current limitations
 
 - No mouse support: no click to focus, no moving or resizing with the
   pointer.
-- One layout (master-stack at 50%); no borders, gaps or decorations.
-- No configuration file; bindings and programs are fixed. Window rules
-  come from an experimental environment variable (see below).
+- One layout (master-stack; the master width is configurable); no
+  borders, gaps or decorations.
+- The configuration is read once at startup: there is no live reload. The
+  number of desktops (8) is fixed.
 - One screen, read once at startup: no RandR or multi-monitor support.
 - The work area is a single rectangle: space next to a partial dock is not
   used.
 - No `_NET_WM_STATE_ABOVE`/`BELOW`, general sticky windows, scratchpads,
-  IPC or command-line control.
+  IPC or command-line control of a running instance.
 - No compositor, panel or other desktop components.
 - Log messages and the detailed documentation are in Spanish.
 
-### Window rules (experimental)
+### Configuration
 
-Since F11, the window manager reads `CRIMSON_RULES` once at startup. **The
-syntax is provisional and will be replaced by a TOML configuration.** Use
-one rule per line, with clauses separated by `;`:
+Since F12, Crimson WM reads an optional TOML file once at startup, before
+connecting to X: `--config PATH`, or else
+`$XDG_CONFIG_HOME/crimson/wm.toml`, or else `~/.config/crimson/wm.toml`.
+Without a file, the defaults above apply, exactly as in F11.
 
-```text
-class=Firefox; desktop=2
-instance=pavucontrol; floating; nofocus
-type=dialog; transient=no; fullscreen
+```toml
+[layout]
+master_percent = 60          # 10–90; default 50
+
+[programs.terminal]
+argv = ["kitty"]             # no shell, no $VARIABLES, no ~
+
+[[keybindings]]              # replaces the whole default table
+keys = "Mod4+Shift+Escape"
+action = "exit"              # at least one exit binding is required
+
+[[keybindings]]
+keys = "Super+Return"
+action = "launch"
+program = "terminal"
+
+[[rules]]                    # F11 window rules
+class = "Firefox"
+desktop = 2
 ```
 
-- **Conditions** (all must match, case-sensitive, exact bytes):
-  `instance=`, `class=` (the two strings of `WM_CLASS`), `type=` (the
-  effective EWMH type: `normal`, `dialog`, `utility`, `toolbar`, `splash`,
-  `menu`, `dropdown_menu`, `popup_menu`, `tooltip`, `combo`, `dnd`) and
-  `transient=yes|no`.
-- **Actions:** `desktop=1…8` (the window waits hidden there, without
-  switching desktops or taking focus), `floating`, `nofocus` (no initial
-  focus only) and `fullscreen` (only for window types that allow it).
-- All rules are evaluated in order, and each action is set by the first
-  matching rule that defines it.
-- **Rules never apply** to windows adopted at startup, to override-redirect
-  windows, or to docks, notifications and desktop windows. A dialog with an
-  owner always stays on its owner's desktop. Changing a window's
-  properties later does not re-evaluate the rules.
-- **Invalid input is rejected as a whole:** an unknown or repeated key, an
-  empty clause, a desktop outside 1–8, a rule without conditions or
-  actions, more than 64 rules, more than 16 KiB, or text that is not UTF-8.
-  The window manager logs the error and starts without rules; the safety
-  checks are unchanged. A malformed `WM_CLASS` simply matches no rule.
+- **Strict validation:** unknown keys, wrong types, out-of-range values,
+  duplicate bindings (after normalising `Super`/`Mod4`, modifier order…),
+  unknown keys or programs and missing `exit` bindings are errors. An
+  invalid or unsafe file (not a regular file, writable by group or others,
+  over 64 KiB, not UTF-8) **stops the window manager with exit code 15
+  before it connects to X**, with the file, line and column. Nothing is
+  ever applied partially.
+- `crimson-wm --check-config [PATH]` validates the configuration without
+  any X server and exits with 0 or 15.
+- Window rules keep the F11 semantics (conditions `instance`, `class`,
+  `type`, `transient`; actions `desktop`, `floating`, `nofocus`,
+  `fullscreen`; the first matching rule that sets an action wins).
+- `CRIMSON_RULES` is **deprecated** but still read: if it is set, it
+  replaces the rules of the file entirely, with a warning; if it is invalid,
+  the window manager starts without rules, as in F11.
 
-There are no wildcards, regular expressions or title matching, and values
-cannot contain `;`. See [ADR 0013](docs/adr/0013-reglas-de-ventanas.md).
+See the [configuration reference](docs/configuration.md), the commented
+[example file](docs/examples/wm.toml) (identical to the defaults) and
+[ADR 0014](docs/adr/0014-configuracion-toml.md).
 
 ## Building
 
@@ -126,9 +142,12 @@ sudo apt install --no-install-recommends rustc cargo rustfmt rust-clippy gcc lib
 cargo build --locked --bins --examples
 ```
 
-`Cargo.lock` is versioned and all commands use `--locked`. The only direct
-dependency is [x11rb](https://github.com/psychon/x11rb) 0.14 (see
-[docs/dependencies.md](docs/dependencies.md)). `unsafe` code is forbidden in
+`Cargo.lock` is versioned and all commands use `--locked`. The direct
+dependencies are [x11rb](https://github.com/psychon/x11rb) 0.14 and, since
+F12, [toml_parser](https://github.com/toml-rs/toml) 1.1 (which pulls in
+`winnow`), plus [rustix](https://github.com/bytecodealliance/rustix) 1.1,
+already used transitively by x11rb and reused for nonblocking file opens;
+see [docs/dependencies.md](docs/dependencies.md). `unsafe` code is forbidden in
 the crate itself.
 
 ## Testing
@@ -155,7 +174,7 @@ programs (since F4), so no real application is ever launched.
 ```sh
 sudo apt install --no-install-recommends xvfb xauth x11-utils x11-apps \
     x11-xserver-utils xdotool imagemagick procps diffutils bsdextrautils shellcheck
-tests/acceptance/f11/run.sh
+tests/acceptance/f12/run.sh
 ```
 
 Before starting any X server, each harness asks Cargo for the window
@@ -172,7 +191,9 @@ observe the real session with `pgrep`; they never connect to `:0`.
 Some harnesses also produce comparison captures with a historical binary
 built from `git archive` (optional `CRIMSON_F8_BIN`, `CRIMSON_F9_BIN` and
 `CRIMSON_F10_BIN`); see the technical documentation. `CRIMSON_RULES` only
-reaches the window manager in the F11 harness.
+reaches the window manager in the F11 harness and in one F12 case. No
+harness reads your own configuration: `HOME` and `XDG_CONFIG_HOME` always
+point to temporary directories.
 
 ## Safety and isolation
 
@@ -188,7 +209,9 @@ manages anything, it checks, in order:
 
 These are **safeguards against accidents, not a security boundary**: any
 client of an X server can affect the others. The details and exit codes
-are in [ADR 0003](docs/adr/0003-salvaguardas-desarrollo.md). The supported
+are in [ADR 0003](docs/adr/0003-salvaguardas-desarrollo.md). The
+configuration file cannot change any of these checks; it is read after
+checks 1 and 2 and before connecting. The supported
 way to run Crimson WM today is through the acceptance harnesses.
 
 ## Diagrams and captures
@@ -210,23 +233,28 @@ the code (SVG sources in [docs/images](docs/images)).
   [captures](docs/images/crimson-wm-f10-comparison.png)
 - Window rules: [diagram](docs/images/crimson-wm-f11-rules.png),
   [captures](docs/images/crimson-wm-f11-comparison.png)
+- TOML configuration: [diagram](docs/images/crimson-wm-f12-config.png),
+  [captures](docs/images/crimson-wm-f12-comparison.png)
 
 ## Documentation
 
 - [Technical documentation (Spanish)](docs/README-technical-es.md): every
   phase in detail, requirements, harnesses and recorded results.
-- [Architecture decision records (Spanish)](docs/adr/): ADR 0001–0013.
+- [Configuration reference](docs/configuration.md) and
+  [example file](docs/examples/wm.toml).
+- [Architecture decision records (Spanish)](docs/adr/): ADR 0001–0014.
 - [Dependency record](docs/dependencies.md).
+- [Independent F12-C audit](docs/f12-audit.md).
 
 ## Roadmap
 
 Planned work. None of the following is implemented yet:
 
 - Mouse support (click to focus, moving and resizing floating windows).
-- More layouts (for example monocle) and adjustable proportions.
-- A declarative TOML configuration, fully validated before it is applied
-  and reloadable, with configurable key bindings, replacing the provisional
-  `CRIMSON_RULES` syntax.
+- More layouts (for example monocle) and changing proportions at run time.
+- Reloading the configuration without restarting (it needs IPC), removing
+  the deprecated `CRIMSON_RULES`, and settings for features that do not
+  exist yet (borders, gaps, mouse, focus policies).
 - More rule features: initial geometry, title matching and wildcards;
   scratchpads.
 - Multi-monitor support through RandR.

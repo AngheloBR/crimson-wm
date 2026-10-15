@@ -1,8 +1,8 @@
-//! Atajos de teclado (ADR 0005 a 0009): una tabla fija capturada en la
-//! raíz, también con Bloq Mayús y Bloq Num activos. Incluye el atajo
-//! provisional de salida `Mod4+Shift+Escape` (ADR 0003), los de lanzamiento
-//! de aplicaciones, los de escritorios, los de cierre de ventanas y el de
-//! pantalla completa.
+//! Atajos de teclado (ADR 0005 a 0009 y 0014): la tabla de la configuración
+//! (o la predeterminada) capturada en la raíz, también con Bloq Mayús y Bloq
+//! Num activos. La predeterminada incluye el atajo provisional de salida
+//! `Mod4+Shift+Escape` (ADR 0003), los de lanzamiento de aplicaciones, los
+//! de escritorios, los de cierre de ventanas y el de pantalla completa.
 
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
@@ -12,6 +12,7 @@ use x11rb::protocol::xproto::{
 };
 
 use crate::error::Fatal;
+use crate::keynames::{self, MOD4, SHIFT};
 use crate::spawn;
 
 const XK_ESCAPE: Keysym = 0xff1b;
@@ -30,10 +31,9 @@ const XK_TAB: Keysym = 0xff09;
 /// Dígitos `1` a `8`, en orden.
 const XK_DIGITS: [Keysym; 8] = [0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38];
 
-// Máscaras de modificadores del protocolo X11 (`ModMask`).
-const SHIFT: u16 = 1 << 0;
+// Máscara de Bloq Mayús del protocolo X11 (`ModMask`); las demás, en
+// keynames.rs.
 const LOCK: u16 = 1 << 1;
-const MOD4: u16 = 1 << 6;
 /// Shift, Lock, Control y Mod1 a Mod5.
 const ALL_MODIFIERS: u16 = 0x00ff;
 
@@ -51,7 +51,8 @@ pub enum Action {
     FocusPrev,
     /// Convierte la ventana enfocada en la maestra.
     Zoom,
-    /// Lanza el programa de ese índice de `spawn::PROGRAMS`.
+    /// Lanza el programa de ese índice de la tabla de programas de la
+    /// configuración.
     Launch(usize),
     /// Activa el escritorio de ese índice (0 a 7).
     View(usize),
@@ -68,15 +69,27 @@ pub enum Action {
     Fullscreen,
 }
 
-struct Binding {
+/// Atajo de la configuración, ya validado (config.rs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Binding {
     /// Modificadores exactos, sin Bloq Mayús ni Bloq Num.
-    modifiers: u16,
-    keysym: Keysym,
-    name: &'static str,
-    action: Action,
+    pub modifiers: u16,
+    pub keysym: Keysym,
+    /// Etiqueta normalizada (keynames.rs), para los registros.
+    pub name: String,
+    pub action: Action,
 }
 
 impl Binding {
+    fn new(modifiers: u16, keysym: Keysym, action: Action) -> Self {
+        Self {
+            modifiers,
+            keysym,
+            name: keynames::label(modifiers, keysym),
+            action,
+        }
+    }
+
     /// Los atajos de control del WM son obligatorios: si alguno no se puede
     /// capturar, el WM no arranca (código 14). Los de lanzamiento son
     /// opcionales: se avisa y el WM sigue sin ellos.
@@ -85,125 +98,41 @@ impl Binding {
     }
 }
 
+/// Tabla predeterminada, la de F4 a F11: la que se usa sin archivo de
+/// configuración o si este no define `[[keybindings]]`. Los índices de
+/// lanzamiento son los de `spawn::default_programs`.
+///
 /// `Mod4+n` activa el escritorio n y `Mod4+Shift+n` lleva allí la ventana
 /// enfocada. Con Shift se captura el mismo keysym del dígito: los atajos se
 /// reconocen por código de tecla y modificadores, no por el carácter que
 /// produce la tecla con Shift (`exclam`, `at`…).
-const fn desk(index: usize, shift: bool, name: &'static str) -> Binding {
-    Binding {
-        modifiers: if shift { MOD4 | SHIFT } else { MOD4 },
-        keysym: XK_DIGITS[index],
-        name,
-        action: if shift {
-            Action::MoveTo(index)
-        } else {
-            Action::View(index)
-        },
+pub fn default_bindings() -> Vec<Binding> {
+    let mut bindings = vec![
+        Binding::new(MOD4 | SHIFT, XK_ESCAPE, Action::Exit),
+        Binding::new(MOD4, XK_J, Action::FocusNext),
+        Binding::new(MOD4, XK_K, Action::FocusPrev),
+        Binding::new(MOD4 | SHIFT, XK_RETURN, Action::Zoom),
+        Binding::new(MOD4, XK_RETURN, Action::Launch(spawn::TERMINAL)),
+        Binding::new(MOD4, XK_D, Action::Launch(spawn::LAUNCHER)),
+        Binding::new(MOD4, XK_E, Action::Launch(spawn::FILES)),
+        Binding::new(MOD4, XK_B, Action::Launch(spawn::BROWSER)),
+        Binding::new(MOD4, XK_N, Action::Launch(spawn::EDITOR)),
+        Binding::new(0, XK_PRINT, Action::Launch(spawn::SCREENSHOT)),
+    ];
+    for (index, &digit) in XK_DIGITS.iter().enumerate() {
+        bindings.push(Binding::new(MOD4, digit, Action::View(index)));
     }
+    for (index, &digit) in XK_DIGITS.iter().enumerate() {
+        bindings.push(Binding::new(MOD4 | SHIFT, digit, Action::MoveTo(index)));
+    }
+    bindings.extend([
+        Binding::new(MOD4, XK_TAB, Action::ViewPrevious),
+        Binding::new(MOD4, XK_W, Action::Close),
+        Binding::new(MOD4 | SHIFT, XK_W, Action::Kill),
+        Binding::new(MOD4, XK_F, Action::Fullscreen),
+    ]);
+    bindings
 }
-
-const BINDINGS: &[Binding] = &[
-    Binding {
-        modifiers: MOD4 | SHIFT,
-        keysym: XK_ESCAPE,
-        name: "Mod4+Shift+Escape",
-        action: Action::Exit,
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_J,
-        name: "Mod4+j",
-        action: Action::FocusNext,
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_K,
-        name: "Mod4+k",
-        action: Action::FocusPrev,
-    },
-    Binding {
-        modifiers: MOD4 | SHIFT,
-        keysym: XK_RETURN,
-        name: "Mod4+Shift+Return",
-        action: Action::Zoom,
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_RETURN,
-        name: "Mod4+Return",
-        action: Action::Launch(spawn::TERMINAL),
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_D,
-        name: "Mod4+d",
-        action: Action::Launch(spawn::LAUNCHER),
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_E,
-        name: "Mod4+e",
-        action: Action::Launch(spawn::FILES),
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_B,
-        name: "Mod4+b",
-        action: Action::Launch(spawn::BROWSER),
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_N,
-        name: "Mod4+n",
-        action: Action::Launch(spawn::EDITOR),
-    },
-    Binding {
-        modifiers: 0,
-        keysym: XK_PRINT,
-        name: "Print",
-        action: Action::Launch(spawn::SCREENSHOT),
-    },
-    desk(0, false, "Mod4+1"),
-    desk(1, false, "Mod4+2"),
-    desk(2, false, "Mod4+3"),
-    desk(3, false, "Mod4+4"),
-    desk(4, false, "Mod4+5"),
-    desk(5, false, "Mod4+6"),
-    desk(6, false, "Mod4+7"),
-    desk(7, false, "Mod4+8"),
-    desk(0, true, "Mod4+Shift+1"),
-    desk(1, true, "Mod4+Shift+2"),
-    desk(2, true, "Mod4+Shift+3"),
-    desk(3, true, "Mod4+Shift+4"),
-    desk(4, true, "Mod4+Shift+5"),
-    desk(5, true, "Mod4+Shift+6"),
-    desk(6, true, "Mod4+Shift+7"),
-    desk(7, true, "Mod4+Shift+8"),
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_TAB,
-        name: "Mod4+Tab",
-        action: Action::ViewPrevious,
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_W,
-        name: "Mod4+w",
-        action: Action::Close,
-    },
-    Binding {
-        modifiers: MOD4 | SHIFT,
-        keysym: XK_W,
-        name: "Mod4+Shift+w",
-        action: Action::Kill,
-    },
-    Binding {
-        modifiers: MOD4,
-        keysym: XK_F,
-        name: "Mod4+f",
-        action: Action::Fullscreen,
-    },
-];
 
 /// Combinaciones reservadas para fases posteriores (ADR 0005). No se
 /// capturan: hasta entonces llegan a la ventana enfocada. Solo las usan las
@@ -238,7 +167,11 @@ impl Bindings {
 
 /// Captura en la raíz todos los atajos de la tabla, también con Bloq Mayús
 /// y Bloq Num activos.
-pub fn grab_bindings(conn: &impl Connection, root: Window) -> Result<Bindings, Fatal> {
+pub fn grab_bindings(
+    conn: &impl Connection,
+    root: Window,
+    table: &[Binding],
+) -> Result<Bindings, Fatal> {
     let setup = conn.setup();
     let min = setup.min_keycode;
     let count = setup
@@ -261,8 +194,23 @@ pub fn grab_bindings(conn: &impl Connection, root: Window) -> Result<Bindings, F
     let num_lock_keycodes = keycodes_for(XK_NUM_LOCK, min, per_keycode, &mapping.keysyms);
     let num_lock = modifier_mask_for(&num_lock_keycodes, &modifiers.keycodes);
 
-    let mut keys = Vec::new();
-    for binding in BINDINGS {
+    let mut keys: Vec<(Keycode, u16, Action)> = Vec::new();
+    for binding in table {
+        // action_for elimina Bloq Num del estado. Admitir aquí uno de sus
+        // modificadores dejaría el grab activo pero la acción inaccesible.
+        if binding.modifiers & num_lock != 0 {
+            let message = format!(
+                "{} usa un modificador de Bloq Num que se ignora al reconocer atajos",
+                binding.name
+            );
+            if binding.required() {
+                return Err(Fatal::Startup(format!(
+                    "{message}; no se puede capturar el atajo"
+                )));
+            }
+            eprintln!("crimson-wm: aviso: {message}; atajo desactivado");
+            continue;
+        }
         let keycodes = keycodes_for(binding.keysym, min, per_keycode, &mapping.keysyms);
         if keycodes.is_empty() {
             if binding.required() {
@@ -278,6 +226,26 @@ pub fn grab_bindings(conn: &impl Connection, root: Window) -> Result<Bindings, F
             continue;
         }
         for &keycode in &keycodes {
+            // Dos keysyms distintos de la tabla pueden estar en el mismo
+            // código de tecla (en otro nivel de la distribución). El
+            // servidor no lo impide, porque las dos capturas son del mismo
+            // cliente, así que se comprueba aquí: gana el primer atajo.
+            if let Some(&(_, _, first)) = keys
+                .iter()
+                .find(|&&(k, m, _)| k == keycode && m == binding.modifiers)
+            {
+                let message = format!(
+                    "el código de tecla {keycode} de {} ya está asignado ({first:?})",
+                    binding.name
+                );
+                if binding.required() {
+                    return Err(Fatal::Startup(format!(
+                        "{message}; no se puede capturar el atajo"
+                    )));
+                }
+                eprintln!("crimson-wm: aviso: {message}; atajo desactivado en esa tecla");
+                continue;
+            }
             if grab_key(conn, root, binding, keycode, num_lock)? {
                 keys.push((keycode, binding.modifiers, binding.action));
             }
@@ -587,9 +555,10 @@ mod tests {
 
     #[test]
     fn la_tabla_no_tiene_atajos_repetidos() {
-        for (i, a) in BINDINGS.iter().enumerate() {
+        let table = default_bindings();
+        for (i, a) in table.iter().enumerate() {
             assert_eq!(a.modifiers & !RELEVANT_MODIFIERS, 0, "{}", a.name);
-            for b in &BINDINGS[i + 1..] {
+            for b in &table[i + 1..] {
                 assert!(
                     (a.modifiers, a.keysym) != (b.modifiers, b.keysym),
                     "{} y {}",
@@ -599,17 +568,14 @@ mod tests {
             }
         }
         // Ningún atajo ocupa una combinación reservada.
-        for b in BINDINGS {
+        for b in &table {
             assert!(
                 !RESERVED.contains(&(b.modifiers, b.keysym)),
                 "{} está reservado",
                 b.name
             );
         }
-        let exit: Vec<_> = BINDINGS
-            .iter()
-            .filter(|b| b.action == Action::Exit)
-            .collect();
+        let exit: Vec<_> = table.iter().filter(|b| b.action == Action::Exit).collect();
         assert_eq!(exit.len(), 1);
         assert_eq!(
             (exit[0].modifiers, exit[0].keysym),
@@ -619,6 +585,8 @@ mod tests {
 
     #[test]
     fn atajos_de_lanzamiento() {
+        let table = default_bindings();
+        let programs = spawn::default_programs();
         let expected: [(u16, Keysym, &str, &[&str]); 6] = [
             (MOD4, XK_RETURN, "Mod4+Return", &["kitty"]),
             (MOD4, XK_D, "Mod4+d", &["rofi", "-show", "drun"]),
@@ -627,7 +595,7 @@ mod tests {
             (MOD4, XK_N, "Mod4+n", &["kitty", "-e", "nvim"]),
             (0, XK_PRINT, "Print", &["flameshot", "gui"]),
         ];
-        let launchers: Vec<_> = BINDINGS
+        let launchers: Vec<_> = table
             .iter()
             .filter_map(|b| match b.action {
                 Action::Launch(program) => Some((b, program)),
@@ -641,15 +609,15 @@ mod tests {
                 .find(|e| e.2 == binding.name)
                 .unwrap_or_else(|| panic!("atajo inesperado {}", binding.name));
             assert_eq!((binding.modifiers, binding.keysym), (*modifiers, *keysym));
-            assert_eq!(spawn::PROGRAMS[*program].argv, *argv, "{}", binding.name);
+            assert_eq!(programs[*program].argv, *argv, "{}", binding.name);
             assert!(!binding.required(), "{} es opcional", binding.name);
         }
         // Cada programa tiene exactamente un atajo.
-        for program in 0..spawn::PROGRAMS.len() {
+        for program in 0..programs.len() {
             assert_eq!(launchers.iter().filter(|(_, p)| *p == program).count(), 1);
         }
         // Los de control siguen siendo obligatorios.
-        for binding in BINDINGS
+        for binding in table
             .iter()
             .filter(|b| !matches!(b.action, Action::Launch(_)))
         {
@@ -695,7 +663,8 @@ mod tests {
 
     #[test]
     fn atajos_de_escritorio() {
-        let desks: Vec<_> = BINDINGS
+        let table = default_bindings();
+        let desks: Vec<_> = table
             .iter()
             .filter(|b| {
                 matches!(
@@ -730,6 +699,7 @@ mod tests {
 
     #[test]
     fn atajos_de_cierre() {
+        let table = default_bindings();
         let b = bindings(NUM_LOCK_MOD2);
         let m4 = KeyButMask::MOD4;
         assert_eq!(b.action_for(25, m4), Some(Action::Close));
@@ -743,15 +713,15 @@ mod tests {
         }
         assert_eq!(b.action_for(25, KeyButMask::from(0u16)), None);
         assert_eq!(b.action_for(25, m4 | KeyButMask::CONTROL), None);
-        let find = |action| BINDINGS.iter().find(|b| b.action == action).unwrap();
+        let find = |action| table.iter().find(|b| b.action == action).unwrap();
         let close = find(Action::Close);
         assert_eq!(
-            (close.modifiers, close.keysym, close.name),
+            (close.modifiers, close.keysym, close.name.as_str()),
             (MOD4, XK_W, "Mod4+w")
         );
         let kill = find(Action::Kill);
         assert_eq!(
-            (kill.modifiers, kill.keysym, kill.name),
+            (kill.modifiers, kill.keysym, kill.name.as_str()),
             (MOD4 | SHIFT, XK_W, "Mod4+Shift+w")
         );
         // Atajos de control: obligatorios.
@@ -762,6 +732,7 @@ mod tests {
 
     #[test]
     fn atajo_de_pantalla_completa() {
+        let table = default_bindings();
         let b = bindings(NUM_LOCK_MOD2);
         let m4 = KeyButMask::MOD4;
         assert_eq!(b.action_for(41, m4), Some(Action::Fullscreen));
@@ -770,17 +741,17 @@ mod tests {
         }
         assert_eq!(b.action_for(41, KeyButMask::from(0u16)), None);
         assert_eq!(b.action_for(41, m4 | KeyButMask::SHIFT), None);
-        let binding = BINDINGS
+        let binding = table
             .iter()
             .find(|b| b.action == Action::Fullscreen)
             .unwrap();
         assert_eq!(
-            (binding.modifiers, binding.keysym, binding.name),
+            (binding.modifiers, binding.keysym, binding.name.as_str()),
             (MOD4, XK_F, "Mod4+f")
         );
         assert!(binding.required(), "atajo de control: obligatorio");
         assert_eq!(
-            BINDINGS.iter().filter(|b| b.keysym == XK_F).count(),
+            table.iter().filter(|b| b.keysym == XK_F).count(),
             1,
             "sin conflictos con otra combinación de f"
         );

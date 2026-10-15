@@ -1,7 +1,7 @@
 # Crimson WM: documentación técnica (español)
 
 > Este documento conserva la documentación técnica detallada de las fases
-> F1–F10, con sus resultados de pruebas. La presentación pública del
+> F1–F12, con sus resultados de pruebas. La presentación pública del
 > proyecto, en inglés, está en el [README](../README.md) del repositorio.
 > Las órdenes se ejecutan desde la raíz del repositorio.
 
@@ -15,8 +15,8 @@ ICCCM y EWMH (ver «Estado»).
 
 ## Estado
 
-Fase F11: reglas de ventanas (`CRIMSON_RULES`, provisional), sobre los
-struts y el área de trabajo, los tipos de ventana EWMH,
+Fase F12: configuración TOML (`crimson/wm.toml`), sobre las reglas de
+ventanas, los struts y el área de trabajo, los tipos de ventana EWMH,
 las ventanas fijas y las capas de apilamiento, los diálogos y ventanas transitorias, la
 pantalla completa, la compatibilidad ICCCM/EWMH, los escritorios virtuales,
 el lanzamiento de aplicaciones, el foco por teclado y el mosaico
@@ -28,20 +28,25 @@ fijos en su capa y en todos los escritorios, deja que los paneles reserven
 su borde, aplica reglas por `WM_CLASS`, tipo y transitoriedad, gestiona el
 foco con el teclado,
 reparte las ventanas en ocho escritorios, pone una ventana a pantalla
-completa, cierra ventanas, lanza seis programas fijos y termina con el
-atajo provisional `Mod4+Shift+Escape`. No tiene ratón, decoraciones,
-panel propio, varios monitores ni configuración (las reglas usan una
-variable de entorno provisional).
+completa, cierra ventanas, lanza programas sin shell y termina con un
+atajo de salida. Sus atajos, programas, proporción de la maestra y reglas
+se pueden configurar en un archivo TOML validado al arrancar; sin él, se
+comporta como F11. No tiene ratón, decoraciones, panel propio, varios
+monitores ni recarga de la configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
-(2026-10-11). Últimos resultados registrados, todos del 2026-10-14 en Xvfb
-sobre el binario de depuración de F11 (detalles y limitaciones en los ADR
-0003 a 0013):
+(2026-10-11). Últimos resultados registrados, todos del 2026-10-15 en Xvfb
+sobre el binario de depuración de F12 (detalles y limitaciones en los ADR
+0003 a 0014):
 
-- Pruebas unitarias U1–U23 (145 pruebas de `cargo test`): pasaron.
-- Aceptación de F11: A121–A134 pasaron y **A135 quedó parcial**, porque la
-  consulta de la raíz de `:0` se omite deliberadamente. Solo se lanzaron
-  programas falsos, nunca las aplicaciones reales.
+- Pruebas unitarias U1–U24 y regresiones de F12-C (204 pruebas de
+  `cargo test`): pasaron; ver [auditoría F12-C](f12-audit.md).
+- Aceptación de F12: A136–A148 pasaron y **A149 quedó parcial**, porque la
+  consulta de la raíz de `:0` se omite deliberadamente (187 OK, 0 FALLA,
+  1 OMITIDA). Solo se lanzaron programas falsos, nunca las aplicaciones
+  reales.
+- Regresión de F11: A121–A134 pasaron y **A135 quedó parcial** por el
+  mismo motivo.
 - Regresión de F10: A104–A119 pasaron y **A120 quedó parcial** por el
   mismo motivo.
 - Regresión de F9: A88–A102 pasaron y **A103 quedó parcial** por el mismo
@@ -406,7 +411,57 @@ el de F11, con las mismas reglas. Volcados de `xwd -root` sin retoques.*
 *Diagrama técnico elaborado a partir del código de F11; no es una captura.
 Fuente editable: `docs/images/crimson-wm-f11-rules.svg`.*
 
-Detalles, casos límite y limitaciones en el ADR 0013.
+Detalles, casos límite y limitaciones en el ADR 0013. Desde F12, las
+mismas reglas se escriben en `[[rules]]` del archivo de configuración, y
+`CRIMSON_RULES` queda obsoleta (ver la sección siguiente).
+
+## Configuración TOML (F12)
+
+![Captura real en Xvfb: sin wm.toml, A ocupa la mitad izquierda y B y V se reparten la pila; con master_percent = 60 y una regla, A ocupa 768 píxeles, B la pila de 512 y V queda flotante encima](images/crimson-wm-f12-comparison.png)
+
+*Capturas auténticas en Xvfb aislados de 1280 × 720 (pruebas A147 y A148),
+con el mismo binario de F12: sin archivo de configuración y con
+`master_percent = 60` y una regla. Volcados de `xwd -root` sin retoques.*
+
+- **Archivo:** `crimson/wm.toml`, leído **una vez**, después de las capas
+  1 y 2 y **antes de conectar con X**. Sin recarga en caliente.
+- **Precedencia:** `--config RUTA` (única fuente; debe existir) >
+  `$XDG_CONFIG_HOME/crimson/wm.toml` (si es una ruta absoluta; si es
+  relativa, se ignora con un aviso; ausente o vacía, no cuenta) >
+  `$HOME/.config/crimson/wm.toml` > configuración predeterminada, idéntica
+  a F11. Gana el primer archivo que existe; si es ilegible o inválido, no
+  se pasa al siguiente. No se crea ningún archivo.
+- **Lectura segura:** archivo regular (comprobado antes de abrir y sobre
+  el descriptor), destino de los enlaces, sin escritura para el grupo ni
+  otros, 64 KiB como mucho, UTF-8. F12-C añade apertura no bloqueante para
+  rechazar también una sustitución por FIFO sin bloquear el arranque.
+- **Esquema:** `[layout] master_percent` (10–90), `[programs.NOMBRE]` con
+  `argv` (sin shell, `~` ni `$`), `[[keybindings]]` (`keys`, `action`,
+  `program`, `desktop`) y `[[rules]]` (las claves de F11). Claves
+  desconocidas, tipos, rangos, duplicados normalizados y la falta de un
+  atajo `exit` son errores. `[[keybindings]]` y `[programs]` sustituyen
+  cada uno su tabla predeterminada completa.
+- **Errores:** código de salida **15**, con archivo, línea y columna, antes
+  de conectar; nunca se aplica una parte. Los mensajes no reproducen argv
+  ni las cadenas de las reglas.
+- **`--check-config [RUTA]`:** valida igual que el arranque, sin `DISPLAY`,
+  `XAUTHORITY`, token ni servidor X; código 0 o 15.
+- **`CRIMSON_RULES`** (obsoleta): si está definida, sustituye a las
+  `[[rules]]` del archivo con un aviso; si es inválida, el WM arranca sin
+  reglas, como en F11.
+- **Dependencia nueva:** `toml_parser` 1.1.5 (y `winnow` 1.0.4), resuelta
+  sin red; F12-C reutiliza además `rustix` como directa sin añadir paquetes
+  ni features; ver `docs/dependencies.md`.
+- **Aún no:** recarga, escritorios configurables, bordes, márgenes,
+  colores, ratón, políticas de foco, otros diseños y scratchpads.
+
+![Diagrama de F12: dónde se lee la configuración en el arranque, sus cuatro etapas y el código 15, la precedencia de las fuentes, la lectura segura, el esquema, el efecto de master_percent, CRIMSON_RULES y lo aplazado](images/crimson-wm-f12-config.png)
+
+*Diagrama técnico elaborado a partir del código de F12; no es una captura.
+Fuente editable: `docs/images/crimson-wm-f12-config.svg`.*
+
+Referencia completa (en inglés) en `docs/configuration.md`, ejemplo
+comentado en `docs/examples/wm.toml` y decisiones en el ADR 0014.
 
 ## Arranque y eventos
 
@@ -414,7 +469,8 @@ Detalles, casos límite y limitaciones en el ADR 0013.
 
 *Diagrama técnico elaborado a partir del código fuente y de los ADR 0002 a
 0013. No es una captura ni demuestra una ejecución; los resultados de las
-pruebas están en los ADR 0003 a 0013.*
+pruebas están en los ADR 0003 a 0014. No incluye la lectura de la
+configuración de F12, que se muestra en `crimson-wm-f12-config.png`.*
 
 ## Principios
 
@@ -423,8 +479,9 @@ pruebas están en los ADR 0003 a 0013.*
 - `unsafe` prohibido en el código propio (`unsafe_code = "forbid"`); el de
   las dependencias se auditará por separado (ver `docs/dependencies.md`).
 - Configuración declarativa (TOML), validada por completo antes de
-  aplicarse y con recarga transaccional. **Planificada; todavía no está
-  implementada:** los atajos y las aplicaciones son fijos.
+  aplicarse. Implementada en F12 para lo que existe (atajos, programas,
+  proporción y reglas); la recarga transaccional está diseñada pero
+  **aplazada** hasta la IPC (ADR 0014).
 - Atajos ejecutados como lista `argv`, nunca mediante una shell implícita.
 - Sin reparenting ni compositor propio en la primera versión.
 
@@ -449,9 +506,9 @@ La columna «Estado» describe el equipo en el que se desarrolló el proyecto
 | `xdotool` | `xdotool` | Simulación de teclado en pruebas | Instalado |
 | `procps` | `pgrep`, `ps` | Comprobación de procesos (`ps`: hijos del WM en F4) | Instalado |
 | `diffutils` | `cmp` | Verificación de los programas falsos de F4 | Instalado |
-| `x11-xserver-utils` | `xmodmap` | Quitar `Print` del mapa de teclado de un Xvfb de prueba (A35) | Instalado |
+| `x11-xserver-utils` | `xmodmap` | Quitar `Print` del mapa de teclado de un Xvfb de prueba (A35) y poner dos keysyms en un código de tecla (A137) | Instalado |
 | `shellcheck` | `shellcheck` | Análisis de los scripts de prueba | Instalado |
-| `bash`, `coreutils`, `findutils`, `grep`, `mawk`, `mount` | `bash`, `timeout`, `mktemp`, `find`, `grep`, `awk`, `mount` | Ejecución del arnés de aceptación | Instalado (paquetes base) |
+| `bash`, `coreutils`, `findutils`, `grep`, `mawk`, `mount` | `bash`, `timeout`, `mktemp`, `find`, `grep`, `awk`, `mount`, `mkfifo` | Ejecución del arnés de aceptación (`mkfifo`: A144) | Instalado (paquetes base) |
 | `xserver-xephyr` | `Xephyr` | Pruebas visuales | **Aplazado** (no instalado) |
 
 ### Herramientas opcionales o futuras
@@ -470,7 +527,7 @@ No se usa rustup. Ver `docs/adr/0001-toolchain.md`.
 Las pruebas se ejecutan **solo** sin servidor X o en servidores X de
 prueba aislados; ninguna se conecta con la sesión principal.
 
-### Unitarias (U1–U23)
+### Unitarias (U1–U24)
 
 ```sh
 cargo test --locked
@@ -730,10 +787,42 @@ tests/acceptance/f11/run.sh [BINARIO]
 - Los resultados se guardan en un directorio nuevo `crimson-f11.XXXXXX`
   dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
 
+### Aceptación de F12 (A136–A149)
+
+```sh
+cargo build --locked --bins --examples
+tests/acceptance/f12/run.sh [BINARIO]
+```
+
+- Mismo uso, comprobaciones previas, código de salida, aislamiento y
+  programas falsos que el arnés de F11, y además `mkfifo`.
+- Las configuraciones de prueba se escriben en el `XDG_CONFIG_HOME` o el
+  `HOME` temporales de cada caso, o se pasan con `--config`; nunca se lee
+  la del usuario. Sus programas solo nombran programas falsos.
+- A139–A144 y A146 se ejecutan también con `unshare -rmn`, sin ningún
+  servidor X visible: cada configuración inválida se prueba en modo normal
+  con `DISPLAY=:57`, donde 15 (y no 11) demuestra que se rechaza antes de
+  intentar conectar, y con `--check-config`, sin `DISPLAY`, `XAUTHORITY`
+  ni token. El archivo sin permiso de lectura (000) se prueba en Xvfb,
+  porque dentro del espacio de nombres el usuario es root.
+- A137 usa `xmodmap` en su Xvfb para poner `j` y `k` en el mismo código de
+  tecla y comprobar que un atajo de control que no se puede capturar
+  impide arrancar (14). Desde F12-C comprueba también el rechazo de un
+  atajo de salida con Alt cuando Num Lock está asignado a Mod1.
+- A147 y A148 hacen las capturas y componen y validan la comparación. La
+  imagen del repositorio procede de A148.
+- A149 equivale a A9 y queda siempre parcial.
+- Los resultados se guardan en un directorio nuevo `crimson-f12.XXXXXX`
+  dentro de `$TMPDIR` (o de `/tmp`), que el arnés no borra.
+
+Desde F12, las ejecuciones de `run_bin` (`f1/lib.sh`) que no usan Xvfb
+reciben `HOME` y `XDG_CONFIG_HOME` de un directorio vacío de la prueba:
+ningún `wm.toml` del desarrollador puede cambiar los resultados de F1–F11.
+
 ### Imágenes de los diagramas
 
 ```sh
-tools/render-svg.py docs/images/crimson-wm-f11-rules.svg docs/images/crimson-wm-f11-rules.png --scale 2
+tools/render-svg.py docs/images/crimson-wm-f12-config.svg docs/images/crimson-wm-f12-config.png --scale 2
 ```
 
 Renderiza un SVG a PNG con las bibliotecas del sistema (librsvg y cairo),
@@ -787,6 +876,9 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
 - `docs/adr/0012-struts-y-area-de-trabajo.md`: struts y área de trabajo de
   F10.
 - `docs/adr/0013-reglas-de-ventanas.md`: reglas de ventanas de F11.
+- `docs/adr/0014-configuracion-toml.md`: configuración TOML de F12.
+- `docs/configuration.md`: referencia de la configuración (en inglés), y
+  `docs/examples/wm.toml`, un ejemplo comentado igual a la predeterminada.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
 
 ## Volver al estado anterior
@@ -809,10 +901,14 @@ existen (o existirán):
   archivos se pueden borrar después de comprobar con `pgrep -a Xvfb` (o
   `pgrep -a Xephyr`) que no queda ningún servidor en ese display.
 - Los resultados de las pruebas de aceptación, en `$TMPDIR/crimson-f1.*`
-  a `$TMPDIR/crimson-f10.*` (o en `/tmp`), con el entorno temporal de cada
+  a `$TMPDIR/crimson-f12.*` (o en `/tmp`), con el entorno temporal de cada
   prueba (`*-entorno/`). Los arneses no los borran; se pueden eliminar
   cuando ya no se necesiten. Los espacios de nombres de `unshare` y el
   tmpfs que se monta dentro desaparecen al terminar.
+
+- Un archivo de configuración, solo si lo creaste tú: Crimson WM nunca crea
+  `~/.config/crimson/wm.toml` ni `$XDG_CONFIG_HOME/crimson/`, y los arneses
+  no los leen ni los escriben.
 
 Nada de esto modifica la sesión gráfica real, su gestor de ventanas, sus
 configuraciones, el gestor de inicio ni los archivos de sesión: Crimson WM

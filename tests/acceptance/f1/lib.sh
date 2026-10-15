@@ -24,6 +24,12 @@ finish() {
     record "$id" "$want" "$got" "$verdict" "$ev"
 }
 
+# Configuración de las ejecuciones de run_bin (ADR 0014): HOME y
+# XDG_CONFIG_HOME apuntan a un directorio vacío de la prueba, para que ningún
+# crimson/wm.toml del usuario cambie el resultado. Los argumentos de env de
+# cada caso pueden sustituirlos.
+CONFIG_HOME=$OUT/home-vacio
+
 # run_bin id código patrón [argumentos de env...] [-- argumentos del binario]
 run_bin() {
     local id=$1 want=$2 pattern=$3
@@ -39,19 +45,23 @@ run_bin() {
         shift
     done
     local log=$OUT/$id.log
-    env "${envargs[@]}" timeout 10 "$BIN" "${binargs[@]}" >"$log" 2>&1
+    mkdir -p "$CONFIG_HOME/.config"
+    env HOME="$CONFIG_HOME" XDG_CONFIG_HOME="$CONFIG_HOME/.config" \
+        env "${envargs[@]}" timeout 10 "$BIN" "${binargs[@]}" >"$log" 2>&1
     finish "$id" "$want" "$?" "$pattern" "$log"
 }
 
-# start_wm id: arranca el WM en segundo plano (WM_ID, WM_PID, WM_LOG) con
-# `env -i` y solo las variables de WM_ENV (xvfb-env.sh), después de
-# comprobar que su PATH no puede resolver ninguna aplicación real. WM_PID es
-# el de `timeout`; el WM es su único hijo.
+# start_wm id [argumentos del binario...]: arranca el WM en segundo plano
+# (WM_ID, WM_PID, WM_LOG) con `env -i` y solo las variables de WM_ENV
+# (xvfb-env.sh), después de comprobar que su PATH no puede resolver ninguna
+# aplicación real. WM_PID es el de `timeout`; el WM es su único hijo. Los
+# argumentos (p. ej., `--config RUTA` en F12) se pasan tal cual.
 start_wm() {
     WM_ID=$1
     WM_LOG=$OUT/$1.log
+    shift
     precondition "PATH del WM aislado" isolated
-    timeout 30 env -i "${WM_ENV[@]}" "$BIN" >"$WM_LOG" 2>&1 &
+    timeout 30 env -i "${WM_ENV[@]}" "$BIN" "$@" >"$WM_LOG" 2>&1 &
     WM_PID=$!
 }
 
