@@ -159,7 +159,8 @@ pub enum Direction {
 }
 
 /// Ventanas gestionadas, en orden de llegada. Las del mosaico, en ese
-/// orden, forman el diseño master-stack: la primera es la maestra.
+/// orden, forman el layout seleccionado: la primera es la maestra en
+/// Master-stack o la primera columna en Columns (ADR 0015).
 ///
 /// `history` guarda las ventanas que han tenido el foco, de la más reciente
 /// a la más antigua; la primera es la enfocada. Solo contiene ventanas
@@ -277,20 +278,26 @@ impl Clients {
     }
 
     /// Geometría de cada ventana colocada por el WM: las del mosaico que no
-    /// están a pantalla completa, en orden, con `master_stack` sobre el área
+    /// están a pantalla completa, en orden, con el layout sobre el área
     /// de trabajo `work`, y la de pantalla completa, sea del tipo que sea,
     /// con la pantalla física `screen` (ADR 0012). La ventana a pantalla
     /// completa sale del cálculo del mosaico pero conserva su posición en la
-    /// lista: al salir recupera su hueco. `master_percent` es la proporción
-    /// de la columna maestra (ADR 0014).
-    pub fn plan(&self, work: Rect, screen: Rect, master_percent: u8) -> Vec<(Window, Rect)> {
+    /// lista: al salir ocupa su hueco en el layout vigente. Los parámetros
+    /// globales ya están validados (ADR 0015).
+    pub fn plan(
+        &self,
+        work: Rect,
+        screen: Rect,
+        kind: layout::LayoutKind,
+        params: layout::LayoutParams,
+    ) -> Vec<(Window, Rect)> {
         let tiled: Vec<Window> = self
             .list
             .iter()
             .filter(|c| c.kind == Kind::Tiled && c.fullscreen.is_none())
             .map(|c| c.window)
             .collect();
-        let rects = layout::master_stack(work, tiled.len(), master_percent);
+        let rects = layout::rectangles(kind, layout::LayoutArea::new(work), tiled.len(), params);
         let mut plan: Vec<(Window, Rect)> = tiled.into_iter().zip(rects).collect();
         plan.extend(self.fullscreen().map(|w| (w, screen)));
         plan
@@ -342,7 +349,7 @@ impl Clients {
         true
     }
 
-    /// Orden de navegación: el mosaico (maestra y pila de arriba abajo) y
+    /// Orden de navegación: el mosaico en su orden lógico y
     /// después las flotantes en orden de llegada, solo las que admiten foco.
     pub fn focus_order(&self) -> Vec<Window> {
         let focusable = |kind| {
@@ -665,7 +672,12 @@ mod tests {
     fn plan_sin_pantalla_completa() {
         let clients = with(&[(1, TILED), (9, FLOATING), (2, TILED), (3, TILED)]);
         assert_eq!(
-            clients.plan(AREA, AREA, layout::DEFAULT_MASTER_PERCENT),
+            clients.plan(
+                AREA,
+                AREA,
+                layout::LayoutKind::MasterStack,
+                layout::LayoutParams::default()
+            ),
             vec![
                 (1, r(0, 0, 640, 720)),
                 (2, r(640, 0, 640, 360)),
@@ -681,13 +693,23 @@ mod tests {
         clients.get_mut(2).unwrap().fullscreen = Some(Restore { frame: None });
         // Las demás se reparten el mosaico; la de pantalla completa, el área.
         assert_eq!(
-            clients.plan(AREA, AREA, layout::DEFAULT_MASTER_PERCENT),
+            clients.plan(
+                AREA,
+                AREA,
+                layout::LayoutKind::MasterStack,
+                layout::LayoutParams::default()
+            ),
             vec![(1, r(0, 0, 640, 720)), (3, r(640, 0, 640, 720)), (2, AREA)]
         );
         // Al salir recupera su hueco: su posición en la lista no ha cambiado.
         clients.get_mut(2).unwrap().fullscreen = None;
         assert_eq!(
-            clients.plan(AREA, AREA, layout::DEFAULT_MASTER_PERCENT)[1],
+            clients.plan(
+                AREA,
+                AREA,
+                layout::LayoutKind::MasterStack,
+                layout::LayoutParams::default()
+            )[1],
             (2, r(640, 0, 640, 360))
         );
         assert_eq!(clients.tiled().collect::<Vec<_>>(), vec![1, 2, 3]);
@@ -703,7 +725,12 @@ mod tests {
             }),
         });
         assert_eq!(
-            clients.plan(AREA, AREA, layout::DEFAULT_MASTER_PERCENT),
+            clients.plan(
+                AREA,
+                AREA,
+                layout::LayoutKind::MasterStack,
+                layout::LayoutParams::default()
+            ),
             vec![(1, AREA), (9, AREA)]
         );
         assert_eq!(clients.fullscreen(), Some(9));
@@ -720,7 +747,12 @@ mod tests {
         let work = r(0, 40, 1280, 680);
         let mut clients = with(&[(1, TILED), (9, FLOATING), (2, TILED), (3, TILED)]);
         assert_eq!(
-            clients.plan(work, AREA, layout::DEFAULT_MASTER_PERCENT),
+            clients.plan(
+                work,
+                AREA,
+                layout::LayoutKind::MasterStack,
+                layout::LayoutParams::default()
+            ),
             vec![
                 (1, r(0, 40, 640, 680)),
                 (2, r(640, 40, 640, 340)),
@@ -729,7 +761,12 @@ mod tests {
         );
         clients.get_mut(2).unwrap().fullscreen = Some(Restore { frame: None });
         assert_eq!(
-            clients.plan(work, AREA, layout::DEFAULT_MASTER_PERCENT),
+            clients.plan(
+                work,
+                AREA,
+                layout::LayoutKind::MasterStack,
+                layout::LayoutParams::default()
+            ),
             vec![
                 (1, r(0, 40, 640, 680)),
                 (3, r(640, 40, 640, 680)),
@@ -739,7 +776,12 @@ mod tests {
         // Las flotantes no están en el plan: nunca se mueven por el área.
         assert!(
             clients
-                .plan(work, AREA, layout::DEFAULT_MASTER_PERCENT)
+                .plan(
+                    work,
+                    AREA,
+                    layout::LayoutKind::MasterStack,
+                    layout::LayoutParams::default()
+                )
                 .iter()
                 .all(|&(w, _)| w != 9)
         );

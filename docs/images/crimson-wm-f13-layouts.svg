@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="980" viewBox="0 0 1280 980" role="img" aria-labelledby="title desc">
+  <title id="title">Crimson WM F13: motor puro y selección por escritorio</title>
+  <desc id="desc">Esquema conceptual. Config selecciona el layout inicial de ocho escritorios. Clients filtra elegibles y el motor puro calcula rectángulos. Wm place utiliza el escritorio recibido y aplica geometrías en X11. Comparación exacta de Master-stack y Columns para tres clientes en 1280 por 720. Fullscreen usa la pantalla; flotantes y diálogos conservan sus marcos.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/></marker>
+    <style>
+      text { font-family: "DejaVu Sans", sans-serif; fill: #202631; }
+      .h { font-size: 27px; font-weight: bold; }
+      .sub { font-size: 17px; fill: #57606a; }
+      .label { font-size: 19px; font-weight: bold; }
+      .body { font-size: 17px; }
+      .small { font-size: 15px; }
+      .light { fill: #fff; }
+      .wire { fill: none; stroke: #57606a; stroke-width: 2.5; marker-end: url(#arrow); }
+      .box { fill: #fff; stroke: #c4cbd3; stroke-width: 1.5; }
+    </style>
+  </defs>
+  <rect width="1280" height="980" fill="#f5f7fa"/>
+  <rect width="1280" height="9" fill="#9b1937"/>
+  <text x="40" y="56" class="h">Crimson WM · F13: dos layouts, un motor puro</text>
+  <text x="40" y="86" class="sub">Esquema conceptual del código · no es una captura de Xvfb · ADR 0015</text>
+
+  <rect x="40" y="115" width="365" height="130" rx="10" class="box"/>
+  <text x="60" y="146" class="label">Config TOML (F12 + F13)</text>
+  <text x="60" y="175" class="body">default: master-stack | columns</text>
+  <text x="60" y="201" class="body">master_percent global: 10–90</text>
+  <text x="60" y="227" class="small">Ausencia de default = comportamiento F12</text>
+  <path d="M 405 178 H 450" class="wire"/>
+  <rect x="455" y="115" width="785" height="130" rx="10" class="box"/>
+  <text x="475" y="146" class="label">Workspaces: ocho Desktop { clients, layout }</text>
+  <text x="475" y="175" class="body">Todos parten del default; cada selección se conserva en memoria.</text>
+  <text x="475" y="201" class="body">cycle_layout alterna solo el activo; no cambia foco ni orden.</text>
+  <text x="475" y="227" class="small">Mover o cerrar ventanas no copia ni restablece el layout. Sin persistencia.</text>
+
+  <text x="40" y="285" class="label">Cálculo y aplicación separados</text>
+  <rect x="40" y="305" width="340" height="139" rx="10" class="box"/>
+  <text x="60" y="337" class="label">Clients::plan</text>
+  <text x="60" y="367" class="body">Filtra Tiled sin fullscreen.</text>
+  <text x="60" y="394" class="body">Conserva el orden de clientes.</text>
+  <text x="60" y="421" class="small">Workarea F10 → LayoutArea</text>
+  <path d="M 380 376 H 425" class="wire"/>
+  <rect x="430" y="305" width="370" height="139" rx="10" fill="#fff0f3" stroke="#9b1937" stroke-width="2"/>
+  <text x="450" y="337" class="label">layout::rectangles</text>
+  <text x="450" y="367" class="body">kind + area + N + params</text>
+  <text x="450" y="394" class="body">→ Vec&lt;Rect&gt; determinista</text>
+  <text x="450" y="421" class="small">Enum y funciones puras · sin E/S ni X11</text>
+  <path d="M 800 376 H 845" class="wire"/>
+  <rect x="850" y="305" width="390" height="139" rx="10" class="box"/>
+  <text x="870" y="337" class="label">Wm::place(desk)</text>
+  <text x="870" y="367" class="body">Usa el layout de desk, aun oculto.</text>
+  <text x="870" y="394" class="body">Aplica y registra geometría real.</text>
+  <text x="870" y="421" class="small">Errores X11 y ConfigureNotify existentes</text>
+
+  <text x="40" y="487" class="label">Misma área 1280×720 · tres clientes elegibles · orden 1 → 2 → 3</text>
+  <text x="40" y="523" class="body">Master-stack · 50 % · predeterminado</text>
+  <text x="680" y="523" class="body">Columns · ancho equitativo, resto al principio</text>
+  <g transform="translate(40 540)">
+    <rect width="560" height="240" fill="#fff" stroke="#202631"/>
+    <rect x="0" width="280" height="240" fill="#9b1937"/>
+    <rect x="280" width="280" height="120" fill="#26374a"/>
+    <rect x="280" y="120" width="280" height="120" fill="#526c83"/>
+    <path d="M 280 0 V 240 M 280 120 H 560" stroke="#fff" stroke-width="2"/>
+    <text x="140" y="114" text-anchor="middle" class="label light">1 · 640×720</text>
+    <text x="420" y="64" text-anchor="middle" class="label light">2 · 640×360</text>
+    <text x="420" y="184" text-anchor="middle" class="label light">3 · 640×360</text>
+  </g>
+  <g transform="translate(680 540)">
+    <rect width="560" height="240" fill="#fff" stroke="#202631"/>
+    <rect width="186.8125" height="240" fill="#9b1937"/>
+    <rect x="186.8125" width="186.8125" height="240" fill="#26374a"/>
+    <rect x="373.625" width="186.375" height="240" fill="#526c83"/>
+    <path d="M 186.8125 0 V 240 M 373.625 0 V 240" stroke="#fff" stroke-width="2"/>
+    <text x="93" y="108" text-anchor="middle" class="label light">1</text>
+    <text x="93" y="137" text-anchor="middle" class="body light">427×720</text>
+    <text x="280" y="108" text-anchor="middle" class="label light">2</text>
+    <text x="280" y="137" text-anchor="middle" class="body light">427×720</text>
+    <text x="467" y="108" text-anchor="middle" class="label light">3</text>
+    <text x="467" y="137" text-anchor="middle" class="body light">426×720</text>
+  </g>
+  <text x="40" y="809" class="small">Diagramas esquemáticos: tamaños indicados en píxeles del área original.</text>
+  <rect x="40" y="832" width="1200" height="112" rx="10" class="box"/>
+  <text x="60" y="862" class="label">Contratos conservados</text>
+  <text x="60" y="890" class="body">Fullscreen → pantalla física. Flotantes y diálogos → sus marcos; sin recentrar al alternar.</text>
+  <text x="60" y="917" class="body">Struts y capas previos. 30 atajos históricos; cycle_layout optativo. Saturación diminuta como F12.</text>
+</svg>

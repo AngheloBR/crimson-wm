@@ -131,6 +131,8 @@ pub fn run(
 ) -> Result<(), Fatal> {
     let bindings = keys::grab_bindings(conn, screen.root, &config.bindings)?;
     let launcher = Launcher::new(target, config.programs);
+    let layout_params = layout::LayoutParams::new(config.master_percent)
+        .ok_or_else(|| Fatal::Startup("porcentaje de layout no validado".into()))?;
     let atoms = Atoms::new(conn)
         .map_err(Fatal::lost)?
         .reply()
@@ -154,11 +156,11 @@ pub fn run(
         root: screen.root,
         screen: physical,
         work: physical,
-        master_percent: config.master_percent,
+        layout_params,
         rules: config.rules,
         types,
         atoms,
-        workspaces: Workspaces::default(),
+        workspaces: Workspaces::new(config.default_layout),
         unmaps: OwnUnmaps::default(),
         focus_request: 0,
         identity: None,
@@ -224,6 +226,17 @@ fn event_loop<C: Connection>(
                 Some(Action::FocusNext) => wm.cycle(Direction::Next, event.time)?,
                 Some(Action::FocusPrev) => wm.cycle(Direction::Prev, event.time)?,
                 Some(Action::Zoom) => wm.zoom()?,
+                Some(Action::CycleLayout) => {
+                    if !repeats.autorepeat(&event) {
+                        let kind = wm.workspaces.cycle_layout();
+                        eprintln!(
+                            "crimson-wm: layout del escritorio {}: {}",
+                            wm.workspaces.index() + 1,
+                            kind.name()
+                        );
+                        wm.arrange()?;
+                    }
+                }
                 // El lanzamiento no espera al programa ni puede fallar.
                 Some(Action::Launch(program)) => {
                     if repeats.accept(program, &event) {
@@ -324,7 +337,7 @@ struct Wm<'c, C: Connection> {
     /// y solo se guarda para saber cuándo cambia.
     work: Rect,
     /// Proporción de la columna maestra (ADR 0014), fija desde el arranque.
-    master_percent: u8,
+    layout_params: layout::LayoutParams,
     /// Reglas de ventanas (ADR 0013), leídas una vez al arrancar.
     rules: Vec<Rule>,
     atoms: Atoms,
@@ -2318,7 +2331,7 @@ impl<C: Connection> Wm<'_, C> {
         }
     }
 
-    /// Aplica al escritorio activo su plan de geometría (master-stack y
+    /// Aplica al escritorio activo su plan de geometría (layout y
     /// pantalla completa, `Clients::plan`). Solo se envía la geometría de las
     /// ventanas que cambian; después se suben las flotantes y se coloca en la
     /// pila la de pantalla completa según el foco.
@@ -2386,12 +2399,15 @@ impl<C: Connection> Wm<'_, C> {
     /// Geometría del plan de un escritorio, sin tocar el apilamiento. Sirve
     /// también para los ocultos (salida normal).
     fn place(&mut self, desk: usize) -> Result<(), Fatal> {
-        let (work, screen, percent) = (self.work, self.screen, self.master_percent);
+        let (work, screen, params) = (self.work, self.screen, self.layout_params);
+        let Some(kind) = self.workspaces.layout(desk) else {
+            return Ok(());
+        };
         let Some(clients) = self.workspaces.desk_mut(desk) else {
             return Ok(());
         };
         let mut changed = Vec::new();
-        for (window, rect) in clients.plan(work, screen, percent) {
+        for (window, rect) in clients.plan(work, screen, kind, params) {
             if clients.set_geometry(window, rect) {
                 changed.push((window, rect));
             }

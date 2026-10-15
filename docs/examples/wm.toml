@@ -1,4 +1,4 @@
-# Crimson WM — example configuration (ADR 0014, docs/configuration.md)
+# Crimson WM — example configuration (ADR 0014/0015, docs/configuration.md)
 #
 # Copy it to ~/.config/crimson/wm.toml (or $XDG_CONFIG_HOME/crimson/wm.toml)
 # and edit it. This file reproduces the built-in defaults exactly: loading it
@@ -16,6 +16,9 @@
 # which programs run with your permissions.
 
 [layout]
+# Initial layout of all eight desktops. Each keeps its selection in memory.
+# Values: "master-stack" or "columns". Missing means "master-stack" (F12).
+default = "master-stack"
 # Width of the master column, in percent of the work area (10–90).
 master_percent = 50
 
@@ -196,6 +199,13 @@ action = "kill"
 [[keybindings]]
 keys = "Mod4+f"
 action = "fullscreen"
+
+# Optional F13 binding, deliberately not active: the 30 defaults stay intact.
+# To enable it, uncomment the next three lines in this complete table.
+# [[keybindings]]
+# keys = "Mod4+space"
+# action = "cycle_layout"
+# Cycles only the active desktop. Layout selection is kept in memory only.
 
 # Window rules (same semantics as F11's CRIMSON_RULES, ADR 0013). None by
 # default; uncomment and adapt. Conditions (all must match): instance and

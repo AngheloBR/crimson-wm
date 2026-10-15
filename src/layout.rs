@@ -1,5 +1,5 @@
-//! Geometría del diseño master-stack (ADR 0004) y del área de trabajo
-//! (ADR 0012). Sin E/S: solo calcula rectángulos.
+//! Geometría de Master-stack y Columns (ADR 0015), del área de trabajo
+//! (ADR 0012) y del centrado (ADR 0010). Sin E/S: solo calcula rectángulos.
 //!
 //! Los tipos coinciden con los del protocolo X11 (coordenadas `INT16` y
 //! tamaños `CARD16`), así que ningún resultado queda fuera de su rango, y
@@ -19,6 +19,96 @@ pub struct Rect {
     pub y: i16,
     pub width: u16,
     pub height: u16,
+}
+
+/// Algoritmos compilados del motor de layouts (ADR 0015).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LayoutKind {
+    #[default]
+    MasterStack,
+    Columns,
+}
+
+impl LayoutKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::MasterStack => "master-stack",
+            Self::Columns => "columns",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "master-stack" => Some(Self::MasterStack),
+            "columns" => Some(Self::Columns),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::MasterStack => Self::Columns,
+            Self::Columns => Self::MasterStack,
+        }
+    }
+}
+
+/// Área normalizada: conserva origen y política de saturación de F12.
+#[derive(Clone, Copy, Debug)]
+pub struct LayoutArea(Rect);
+
+impl LayoutArea {
+    pub fn new(rect: Rect) -> Self {
+        Self(Rect {
+            width: rect.width.max(1),
+            height: rect.height.max(1),
+            ..rect
+        })
+    }
+}
+
+/// Parámetros globales validados. Columns conserva pero no usa el porcentaje.
+#[derive(Clone, Copy, Debug)]
+pub struct LayoutParams {
+    master_percent: u8,
+}
+
+impl LayoutParams {
+    pub fn new(master_percent: u8) -> Option<Self> {
+        (MIN_MASTER_PERCENT..=MAX_MASTER_PERCENT)
+            .contains(&master_percent)
+            .then_some(Self { master_percent })
+    }
+}
+
+impl Default for LayoutParams {
+    fn default() -> Self {
+        Self {
+            master_percent: DEFAULT_MASTER_PERCENT,
+        }
+    }
+}
+
+/// Un rectángulo por posición elegible, sin conocer ventanas ni X11.
+/// La asociación con clientes y fullscreen pertenece a Clients::plan.
+pub fn rectangles(
+    kind: LayoutKind,
+    area: LayoutArea,
+    count: usize,
+    params: LayoutParams,
+) -> Vec<Rect> {
+    let area = area.0;
+    match kind {
+        LayoutKind::MasterStack => master_stack(area, count, params.master_percent),
+        LayoutKind::Columns if count == 0 => Vec::new(),
+        LayoutKind::Columns => split(area.width, count)
+            .map(|(offset, width)| Rect {
+                x: area.x.saturating_add_unsigned(offset),
+                width,
+                ..area
+            })
+            .collect(),
+    }
 }
 
 /// Grosor reservado en cada borde de la pantalla (ADR 0012): el máximo de
@@ -205,6 +295,163 @@ fn to_u16(value: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // U25: cálculo puro y compatibilidad del motor (ADR 0015).
+    fn columns(area: Rect, n: usize) -> Vec<Rect> {
+        rectangles(
+            LayoutKind::Columns,
+            LayoutArea::new(area),
+            n,
+            LayoutParams::default(),
+        )
+    }
+
+    #[test]
+    fn u25_geometrias_exactas() {
+        assert_eq!(
+            columns(SCREEN, 3),
+            vec![
+                rect(0, 0, 427, 720),
+                rect(427, 0, 427, 720),
+                rect(854, 0, 426, 720)
+            ]
+        );
+        assert_eq!(
+            columns(rect(0, 0, 1279, 719), 2),
+            vec![rect(0, 0, 640, 719), rect(640, 0, 639, 719)]
+        );
+        assert_eq!(
+            columns(rect(0, 40, 1280, 680), 2),
+            vec![rect(0, 40, 640, 680), rect(640, 40, 640, 680)]
+        );
+        assert_eq!(
+            columns(rect(-10, 20, 100, 50), 3),
+            vec![
+                rect(-10, 20, 34, 50),
+                rect(24, 20, 33, 50),
+                rect(57, 20, 33, 50)
+            ]
+        );
+        assert_eq!(
+            columns(rect(0, 0, 3840, 1080), 3),
+            vec![
+                rect(0, 0, 1280, 1080),
+                rect(1280, 0, 1280, 1080),
+                rect(2560, 0, 1280, 1080)
+            ]
+        );
+    }
+
+    #[test]
+    fn u25_cero_uno_y_degenerados() {
+        assert!(columns(SCREEN, 0).is_empty());
+        assert_eq!(columns(SCREEN, 1), vec![SCREEN]);
+        assert_eq!(columns(rect(0, 0, 0, 0), 3), vec![rect(0, 0, 1, 1); 3]);
+        assert_eq!(
+            columns(rect(0, 0, 4, 2), 5),
+            vec![
+                rect(0, 0, 1, 2),
+                rect(1, 0, 1, 2),
+                rect(2, 0, 1, 2),
+                rect(3, 0, 1, 2),
+                rect(3, 0, 1, 2)
+            ]
+        );
+        let area = rect(i16::MAX - 1, i16::MIN, u16::MAX, u16::MAX);
+        let rs = columns(area, 3);
+        assert_eq!(rs[0], rect(i16::MAX - 1, i16::MIN, 21845, u16::MAX));
+        assert_eq!(rs[1].x, i16::MAX);
+        assert_eq!(rs[2].x, i16::MAX);
+        assert_eq!(columns(rect(i16::MIN, 0, u16::MAX, 1), 2)[1].x, 0);
+        let many = columns(SCREEN, 10_000);
+        assert_eq!(many.len(), 10_000);
+        assert_eq!(many[9_999], rect(1279, 0, 1, 720));
+    }
+
+    #[test]
+    fn u25_cobertura_y_determinismo() {
+        for width in 1..=32u16 {
+            for n in 1..=usize::from(width) {
+                let area = rect(-12, 7, width, 19);
+                let rs = columns(area, n);
+                assert_eq!(rs, columns(area, n));
+                assert_eq!(rs.len(), n);
+                let mut x = i32::from(area.x);
+                for r in rs {
+                    assert_eq!(i32::from(r.x), x);
+                    assert!(r.width > 0);
+                    assert_eq!((r.y, r.height), (area.y, area.height));
+                    x += i32::from(r.width);
+                }
+                assert_eq!(x, i32::from(area.x) + i32::from(width));
+            }
+        }
+    }
+
+    #[test]
+    fn u25_oraculo_por_reparto_de_pixeles() {
+        // Oráculo independiente de split: repartir un píxel por turno y
+        // acumular anchuras, sin usar cocientes ni la fórmula de offsets.
+        for width in [0, 1, 2, 3, 7, 31, 127, 128, 255, 1279, 1280, u16::MAX] {
+            for n in [0, 1, 2, 3, 4, 5, 17, 129, 256, 1024] {
+                let mut widths = vec![0u16; n];
+                if n > 0 {
+                    for pixel in 0..usize::from(width.max(1)) {
+                        widths[pixel % n] += 1;
+                    }
+                }
+                for x in [i16::MIN, -10, 0, 20, i16::MAX - 1, i16::MAX] {
+                    for height in [0, 1, u16::MAX] {
+                        let area = rect(x, i16::MIN, width, height);
+                        let mut cursor = 0i32;
+                        let expected: Vec<_> = widths
+                            .iter()
+                            .map(|&w| {
+                                let offset = cursor.min(i32::from(width.max(1)) - 1);
+                                let origin = (i32::from(x) + offset).min(i32::from(i16::MAX));
+                                cursor += i32::from(w);
+                                rect(
+                                    i16::try_from(origin).unwrap(),
+                                    i16::MIN,
+                                    w.max(1),
+                                    height.max(1),
+                                )
+                            })
+                            .collect();
+                        assert_eq!(columns(area, n), expected, "{area:?}, N={n}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn u25_despacho_conserva_master_stack() {
+        for p in [10, 33, 50, 60, 90] {
+            let params = LayoutParams::new(p).unwrap();
+            for area in [
+                SCREEN,
+                rect(-10, 20, 1279, 719),
+                rect(0, 0, 0, 0),
+                rect(i16::MAX - 1, i16::MAX - 1, u16::MAX, u16::MAX),
+            ] {
+                for n in [0, 1, 2, 3, 20] {
+                    assert_eq!(
+                        rectangles(LayoutKind::MasterStack, LayoutArea::new(area), n, params),
+                        master_stack(area, n, p)
+                    );
+                    assert_eq!(
+                        rectangles(LayoutKind::Columns, LayoutArea::new(area), n, params),
+                        columns(area, n)
+                    );
+                }
+            }
+        }
+        for p in [0, 9, 91, 255] {
+            assert!(LayoutParams::new(p).is_none());
+        }
+        assert_eq!(LayoutKind::default().next().next(), LayoutKind::MasterStack);
+    }
 
     // U20: centrado de diálogos.
 

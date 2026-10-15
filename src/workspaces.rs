@@ -1,5 +1,5 @@
 //! Escritorios virtuales (ADR 0007): ocho conjuntos independientes de
-//! ventanas, cada uno con su propio orden master-stack e historial de foco,
+//! ventanas, cada uno con su propio layout, orden e historial de foco,
 //! y la colección de ventanas fijas, que no pertenecen a ninguno (ADR 0011).
 //! Sin E/S: `wm.rs` muestra, oculta y enfoca las ventanas según lo que
 //! decide este módulo.
@@ -11,7 +11,14 @@ use x11rb::protocol::xproto::Window;
 
 use crate::clients::{Class, Client, Clients, FixedKind, Kind, Layer, Removed, Restore};
 use crate::ewmh::Strut;
-use crate::layout::Insets;
+use crate::layout::{Insets, LayoutKind};
+
+/// Estado por escritorio; el layout no viaja con sus ventanas (ADR 0015).
+#[derive(Debug, Default)]
+struct Desktop {
+    clients: Clients,
+    layout: LayoutKind,
+}
 
 /// Número fijo de escritorios.
 pub const COUNT: usize = 8;
@@ -75,7 +82,7 @@ pub struct Fixed {
 /// - como mucho una ventana a pantalla completa por escritorio (ADR 0009).
 #[derive(Debug, Default)]
 pub struct Workspaces {
-    desks: [Clients; COUNT],
+    desks: [Desktop; COUNT],
     /// Ventanas fijas, en orden de gestión.
     fixed: Vec<Fixed>,
     current: usize,
@@ -85,26 +92,48 @@ pub struct Workspaces {
 }
 
 impl Workspaces {
+    pub fn new(layout: LayoutKind) -> Self {
+        Self {
+            desks: std::array::from_fn(|_| Desktop {
+                clients: Clients::default(),
+                layout,
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// Selección de cualquier escritorio, también si está oculto o vacío.
+    pub fn layout(&self, index: usize) -> Option<LayoutKind> {
+        self.desks.get(index).map(|d| d.layout)
+    }
+
+    /// Solo cambia la selección del activo; conserva clientes y foco.
+    pub fn cycle_layout(&mut self) -> LayoutKind {
+        let desk = &mut self.desks[self.current];
+        desk.layout = desk.layout.next();
+        desk.layout
+    }
+
     /// Índice del escritorio activo.
     pub fn index(&self) -> usize {
         self.current
     }
 
     pub fn current(&self) -> &Clients {
-        &self.desks[self.current]
+        &self.desks[self.current].clients
     }
 
     pub fn current_mut(&mut self) -> &mut Clients {
-        &mut self.desks[self.current]
+        &mut self.desks[self.current].clients
     }
 
     /// Ventanas de un escritorio. `None` fuera de rango.
     pub fn desk(&self, index: usize) -> Option<&Clients> {
-        self.desks.get(index)
+        self.desks.get(index).map(|d| &d.clients)
     }
 
     pub fn desk_mut(&mut self, index: usize) -> Option<&mut Clients> {
-        self.desks.get_mut(index)
+        self.desks.get_mut(index).map(|d| &mut d.clients)
     }
 
     /// Pone la ventana a pantalla completa con lo necesario para
@@ -113,13 +142,14 @@ impl Workspaces {
     /// está gestionada o ya estaba a pantalla completa (idempotente).
     pub fn enter_fullscreen(&mut self, window: Window, restore: Restore) -> Option<Entered> {
         let desk = self.locate(window)?;
-        if self.desks[desk].get(window)?.fullscreen.is_some() {
+        if self.desks[desk].clients.get(window)?.fullscreen.is_some() {
             return None;
         }
         let displaced = self.desks[desk]
+            .clients
             .fullscreen()
             .and_then(|other| self.leave_fullscreen(other).map(|(_, r)| (other, r)));
-        self.desks[desk].get_mut(window)?.fullscreen = Some(restore);
+        self.desks[desk].clients.get_mut(window)?.fullscreen = Some(restore);
         Some(Entered { desk, displaced })
     }
 
@@ -129,7 +159,7 @@ impl Workspaces {
     /// cambiar nada, si no estaba a pantalla completa (idempotente).
     pub fn leave_fullscreen(&mut self, window: Window) -> Option<(usize, Restore)> {
         let desk = self.locate(window)?;
-        let client = self.desks[desk].get_mut(window)?;
+        let client = self.desks[desk].clients.get_mut(window)?;
         let restore = client.fullscreen.take()?;
         if client.kind == Kind::Floating {
             client.geometry = None;
@@ -139,16 +169,20 @@ impl Workspaces {
 
     /// Escritorio de la ventana, si está gestionada.
     pub fn locate(&self, window: Window) -> Option<usize> {
-        self.desks.iter().position(|d| d.get(window).is_some())
+        self.desks
+            .iter()
+            .position(|d| d.clients.get(window).is_some())
     }
 
     /// La ventana gestionada, esté en el escritorio que esté.
     pub fn get(&self, window: Window) -> Option<&Client> {
-        self.desks.iter().find_map(|d| d.get(window))
+        self.desks.iter().find_map(|d| d.clients.get(window))
     }
 
     pub fn get_mut(&mut self, window: Window) -> Option<&mut Client> {
-        self.desks.iter_mut().find_map(|d| d.get_mut(window))
+        self.desks
+            .iter_mut()
+            .find_map(|d| d.clients.get_mut(window))
     }
 
     /// Gestiona la ventana en el escritorio activo. Devuelve `false`, sin
@@ -247,7 +281,7 @@ impl Workspaces {
         let mut all: Vec<(u64, Window)> = self
             .desks
             .iter()
-            .flat_map(|d| d.windows().filter_map(|w| d.get(w)))
+            .flat_map(|d| d.clients.windows().filter_map(|w| d.clients.get(w)))
             .map(|c| (c.order, c.window))
             .chain(self.fixed.iter().map(|f| (f.order, f.window)))
             .collect();
@@ -260,6 +294,7 @@ impl Workspaces {
     pub fn unmanage(&mut self, window: Window) -> Option<(usize, Removed)> {
         let index = self.locate(window)?;
         self.desks[index]
+            .clients
             .unmanage(window)
             .map(|removed| (index, removed))
     }
@@ -351,7 +386,7 @@ impl Workspaces {
     /// la ventana más antigua a la que tiene la más reciente, para que un
     /// diálogo nuevo quede visible. Las de mosaico nunca se reordenan.
     pub fn floating_stack(&self, desk: usize) -> Vec<Window> {
-        let Some(clients) = self.desks.get(desk) else {
+        let Some(clients) = self.desk(desk) else {
             return Vec::new();
         };
         let order = |w: Window| self.get(w).map_or(0, |c| c.order);
@@ -442,15 +477,15 @@ impl Workspaces {
         if to >= COUNT || to == from {
             return None;
         }
-        let (client, was_focused) = self.desks[from].take(window)?;
+        let (client, was_focused) = self.desks[from].clients.take(window)?;
         let kind = client.kind;
         // Una ventana a pantalla completa la conserva; si el destino ya
         // tenía otra, esa la deja (la última gana).
-        let displaced = match (client.fullscreen, self.desks[to].fullscreen()) {
+        let displaced = match (client.fullscreen, self.desks[to].clients.fullscreen()) {
             (Some(_), Some(other)) => self.leave_fullscreen(other).map(|(_, r)| (other, r)),
             _ => None,
         };
-        self.desks[to].adopt(client, focus);
+        self.desks[to].clients.adopt(client, focus);
         Some(Moved {
             window,
             kind,
@@ -483,7 +518,7 @@ impl Workspaces {
             }
             assert!(self.owner_of(current).is_none(), "ciclo efectivo desde {w}");
         }
-        let total: usize = self.desks.iter().map(|d| d.windows().count()).sum();
+        let total: usize = self.desks.iter().map(|d| d.clients.windows().count()).sum();
         assert_eq!(
             list.len(),
             total + self.fixed.len(),
@@ -513,7 +548,8 @@ impl Workspaces {
         for (i, w) in list.iter().enumerate() {
             assert!(!list[i + 1..].contains(w), "_NET_CLIENT_LIST repetida");
         }
-        for (i, desk) in self.desks.iter().enumerate() {
+        for (i, desktop) in self.desks.iter().enumerate() {
+            let desk = &desktop.clients;
             let fullscreen = desk
                 .windows()
                 .filter(|&w| desk.get(w).is_some_and(|c| c.fullscreen.is_some()))
@@ -522,7 +558,11 @@ impl Workspaces {
             desk.assert_consistent();
             for w in desk.windows() {
                 assert_eq!(self.locate(w), Some(i), "ventana {w} en varios escritorios");
-                let others = self.desks.iter().filter(|d| d.get(w).is_some()).count();
+                let others = self
+                    .desks
+                    .iter()
+                    .filter(|d| d.clients.get(w).is_some())
+                    .count();
                 assert_eq!(others, 1, "ventana {w} en {others} escritorios");
             }
         }
@@ -533,6 +573,119 @@ impl Workspaces {
 mod tests {
     use super::*;
     use crate::clients::InputModel;
+
+    // U26: selección independiente del contenido del escritorio.
+    #[test]
+    fn u26_seleccion_y_persistencia() {
+        let mut ws = Workspaces::new(LayoutKind::Columns);
+        for i in 0..COUNT {
+            assert_eq!(ws.layout(i), Some(LayoutKind::Columns));
+        }
+        assert_eq!(ws.layout(COUNT), None);
+        assert_eq!(ws.cycle_layout(), LayoutKind::MasterStack);
+        ws.manage(1, TILED);
+        ws.current_mut().focus(1);
+        ws.switch(1);
+        assert_eq!(ws.cycle_layout(), LayoutKind::MasterStack);
+        ws.cycle_layout();
+        ws.back();
+        assert_eq!(ws.layout(0), Some(LayoutKind::MasterStack));
+        ws.unmanage(1);
+        assert_eq!(ws.layout(0), Some(LayoutKind::MasterStack));
+        assert_eq!(ws.layout(1), Some(LayoutKind::Columns));
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn u26_ciclo_no_cambia_clientes_foco_ni_fullscreen() {
+        let mut ws = Workspaces::default();
+        for w in [1, 2, 3] {
+            ws.manage(w, TILED);
+        }
+        ws.manage(9, FLOATING);
+        ws.current_mut().focus(2);
+        ws.enter_fullscreen(2, Restore { frame: None });
+        let order = ws.current().windows().collect::<Vec<_>>();
+        let navigation = ws.current().focus_order();
+        ws.cycle_layout();
+        assert_eq!(ws.current().windows().collect::<Vec<_>>(), order);
+        assert_eq!(ws.current().focus_order(), navigation);
+        assert_eq!(ws.current().focused(), Some(2));
+        assert_eq!(ws.current().fullscreen(), Some(2));
+        let screen = crate::layout::Rect {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720,
+        };
+        let work = crate::layout::Rect {
+            y: 40,
+            height: 680,
+            ..screen
+        };
+        let plan = ws.current().plan(
+            work,
+            screen,
+            ws.layout(0).unwrap(),
+            crate::layout::LayoutParams::default(),
+        );
+        assert_eq!(
+            plan,
+            vec![
+                (1, crate::layout::Rect { width: 640, ..work }),
+                (
+                    3,
+                    crate::layout::Rect {
+                        x: 640,
+                        width: 640,
+                        ..work
+                    }
+                ),
+                (2, screen)
+            ]
+        );
+        ws.leave_fullscreen(2);
+        let plan = ws.current().plan(
+            work,
+            screen,
+            ws.layout(0).unwrap(),
+            crate::layout::LayoutParams::default(),
+        );
+        assert_eq!(
+            plan[1],
+            (
+                2,
+                crate::layout::Rect {
+                    x: 427,
+                    width: 427,
+                    ..work
+                }
+            )
+        );
+        assert_eq!(ws.current().windows().collect::<Vec<_>>(), order);
+        ws.current_mut().zoom();
+        assert_eq!(ws.current().tiled().next(), Some(2));
+        ws.assert_consistent();
+    }
+
+    #[test]
+    fn u26_mover_no_transporta_layout() {
+        let mut ws = Workspaces::default();
+        ws.cycle_layout();
+        ws.manage(1, TILED);
+        ws.current_mut().focus(1);
+        ws.enter_fullscreen(1, Restore { frame: None });
+        ws.move_window(1, 1, true).unwrap();
+        assert_eq!(ws.layout(0), Some(LayoutKind::Columns));
+        assert_eq!(ws.layout(1), Some(LayoutKind::MasterStack));
+        assert_eq!(ws.desk(1).unwrap().focused(), Some(1));
+        assert_eq!(ws.desk(1).unwrap().fullscreen(), Some(1));
+        ws.switch(1);
+        ws.move_window(1, 0, false).unwrap();
+        assert_eq!(ws.index(), 1);
+        assert_eq!(ws.layout(0), Some(LayoutKind::Columns));
+        ws.assert_consistent();
+    }
 
     const TILED: Class = Class {
         kind: Kind::Tiled,

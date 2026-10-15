@@ -1,13 +1,13 @@
 # Crimson WM: documentación técnica (español)
 
 > Este documento conserva la documentación técnica detallada de las fases
-> F1–F12, con sus resultados de pruebas. La presentación pública del
+> F1–F13, con sus resultados de pruebas. La presentación pública del
 > proyecto, en inglés, está en el [README](../README.md) del repositorio.
 > Las órdenes se ejecutan desde la raíz del repositorio.
 
 Gestor de ventanas para X11, escrito en Rust y dirigido inicialmente a
 Debian 13 (Trixie), orientado a la gestión de ventanas en mosaico. Por ahora
-es un prototipo con un único diseño, master-stack, ocho escritorios
+es un prototipo con Master-stack y Columns, ocho escritorios
 virtuales, pantalla completa, diálogos que siguen a su ventana principal,
 tipos de ventana EWMH con paneles y fondos fijos en todos los escritorios,
 paneles que reservan espacio en los bordes y compatibilidad parcial con
@@ -15,7 +15,8 @@ ICCCM y EWMH (ver «Estado»).
 
 ## Estado
 
-Fase F12: configuración TOML (`crimson/wm.toml`), sobre las reglas de
+Fase F13: motor puro de layouts y selección por escritorio, sobre la
+configuración TOML (`crimson/wm.toml`), las reglas de
 ventanas, los struts y el área de trabajo, los tipos de ventana EWMH,
 las ventanas fijas y las capas de apilamiento, los diálogos y ventanas transitorias, la
 pantalla completa, la compatibilidad ICCCM/EWMH, los escritorios virtuales,
@@ -29,13 +30,18 @@ su borde, aplica reglas por `WM_CLASS`, tipo y transitoriedad, gestiona el
 foco con el teclado,
 reparte las ventanas en ocho escritorios, pone una ventana a pantalla
 completa, cierra ventanas, lanza programas sin shell y termina con un
-atajo de salida. Sus atajos, programas, proporción de la maestra y reglas
+atajo de salida. Sus atajos, programas, layout inicial, proporción de la maestra y reglas
 se pueden configurar en un archivo TOML validado al arrancar; sin él, se
 comporta como F11. No tiene ratón, decoraciones, panel propio, varios
 monitores ni recarga de la configuración.
 
 Las cuatro capas de salvaguardas están implementadas desde P4
-(2026-10-11). Últimos resultados registrados, todos del 2026-10-15 en Xvfb
+(2026-10-11). La [auditoría F13-C](f13-audit.md) registra 214 unitarias,
+166 OK de F13 y las doce regresiones F1–F12 sin fallos, cada aceptación
+con una omisión deliberada por `:0`. Incluye las correcciones de los
+observadores y la investigación de Xvfb. Los antecedentes de F13-B se
+conservan en el [ADR 0015](adr/0015-motor-de-layouts.md). Antecedentes de F12-C,
+todos del 2026-10-15 en Xvfb
 sobre el binario de depuración de F12 (detalles y limitaciones en los ADR
 0003 a 0014):
 
@@ -72,6 +78,42 @@ Son los resultados de esas ejecuciones concretas, no una garantía para
 cambios posteriores: las pruebas deben repetirse tras cada cambio.
 
 No ejecutes Crimson WM sobre una sesión gráfica real.
+
+## Motor de layouts (F13)
+
+`LayoutKind` enumera exclusivamente Master-stack y Columns. El motor
+`layout::rectangles` recibe un área normalizada, el número de clientes y
+parámetros validados; devuelve rectángulos deterministas sin X11 ni E/S.
+`Clients::plan` conserva el filtro de elegibles y `Wm::place(desk)` aplica
+el algoritmo del escritorio recibido, incluso si está oculto.
+
+Cada uno de los ocho escritorios conserva en memoria su selección. Todos
+empiezan con `[layout] default = "master-stack"` (también admite
+`"columns"`). El porcentaje de maestra sigue siendo global; Columns no lo
+usa, pero se valida igualmente. Omitir `default` conserva F12.
+
+`cycle_layout` alterna ambos algoritmos solo en el activo, sin cambiar
+foco, orden, reglas ni fullscreen. No tiene atajo predeterminado: se
+conservan los 30 históricos. Una tabla explícita sigue sustituyendo la
+tabla completa. No hay persistencia ni recarga.
+
+![Esquema conceptual del motor, su estado por escritorio y la comparación de geometrías](images/crimson-wm-f13-layouts.png)
+
+*Diagrama conceptual del código, no captura. Fuente editable
+[SVG](images/crimson-wm-f13-layouts.svg).*
+
+![Master-stack a la izquierda y Columns a la derecha con las mismas tres ventanas de colores](images/crimson-wm-f13-comparison.png)
+
+*Capturas auténticas de A151, tomadas con `xwd` en Xvfb aislado 1280×720.
+Mismo binario y mismos clientes. Solo se añaden rótulos; ambos paneles se
+contrastan píxel a píxel con los originales.*
+
+Columns reparte W/N y entrega el resto a las primeras ventanas. Para W=1280
+y N=3: anchos 427, 427, 426. Cuando N>W, los sobrantes se solapan en el
+último píxel, conservando la política de saturación histórica. Fullscreen
+usa la pantalla física; flotantes y diálogos conservan sus marcos. Los
+struts se aplican antes de calcular el mosaico. Detalles y límites en el
+[ADR 0015](adr/0015-motor-de-layouts.md).
 
 ## Diseño master-stack (F2)
 
@@ -819,10 +861,32 @@ Desde F12, las ejecuciones de `run_bin` (`f1/lib.sh`) que no usan Xvfb
 reciben `HOME` y `XDG_CONFIG_HOME` de un directorio vacío de la prueba:
 ningún `wm.toml` del desarrollador puede cambiar los resultados de F1–F11.
 
+### Aceptación de F13 (A150–A165)
+
+```sh
+tests/acceptance/f13/run.sh [BINARIO]
+```
+
+- Conserva las guardas, configuración temporal, cookies y programas
+  falsos de F12. No accede al servidor `:0`.
+- A150–A164 observan geometrías, propiedades, foco y ConfigureNotify
+  reales. Incluyen persistencia, movimiento y fullscreen entre
+  escritorios, struts, reglas, diálogos y las áreas 1279×719, 3840×1080 y
+  4×2. A151 compone y valida la comparación publicada.
+- A162 termina deliberadamente su Xvfb y exige código 13 del WM.
+  Solo ahí se acepta xvfb-run 1 si el script interno termina correctamente.
+- A164 añade rechazos previos a conexión en un namespace con sockets
+  ocultos y red aislada. A165 comprueba recursos propios y procesos; su
+  consulta a la sesión `:0` queda OMITIDA deliberadamente.
+- Los manifiestos de resultados esperados impiden que un aborto silencioso
+  reduzca la cobertura. Cada identificador debe aparecer exactamente una vez.
+- Resultados en `$TMPDIR/crimson-f13.XXXXXX` (o `/tmp`); resumen y
+  regresiones F1–F12 en el [ADR 0015](adr/0015-motor-de-layouts.md).
+
 ### Imágenes de los diagramas
 
 ```sh
-tools/render-svg.py docs/images/crimson-wm-f12-config.svg docs/images/crimson-wm-f12-config.png --scale 2
+tools/render-svg.py docs/images/crimson-wm-f13-layouts.svg docs/images/crimson-wm-f13-layouts.png --scale 2
 ```
 
 Renderiza un SVG a PNG con las bibliotecas del sistema (librsvg y cairo),
@@ -877,6 +941,10 @@ gestor de ventanas (`_NET_SUPPORTING_WM_CHECK`, la selección `WM_S0` o
   F10.
 - `docs/adr/0013-reglas-de-ventanas.md`: reglas de ventanas de F11.
 - `docs/adr/0014-configuracion-toml.md`: configuración TOML de F12.
+- `docs/adr/0015-motor-de-layouts.md`: motor, layouts por escritorio y
+  pruebas U25–U27 y A150–A165 de F13.
+- `docs/f13-audit.md`: auditoría F13-C, observadores corregidos,
+  oráculo geométrico adicional e incidencia Xvfb.
 - `docs/configuration.md`: referencia de la configuración (en inglés), y
   `docs/examples/wm.toml`, un ejemplo comentado igual a la predeterminada.
 - `docs/dependencies.md`: registro de dependencias y auditorías.
@@ -901,7 +969,7 @@ existen (o existirán):
   archivos se pueden borrar después de comprobar con `pgrep -a Xvfb` (o
   `pgrep -a Xephyr`) que no queda ningún servidor en ese display.
 - Los resultados de las pruebas de aceptación, en `$TMPDIR/crimson-f1.*`
-  a `$TMPDIR/crimson-f12.*` (o en `/tmp`), con el entorno temporal de cada
+  a `$TMPDIR/crimson-f13.*` (o en `/tmp`), con el entorno temporal de cada
   prueba (`*-entorno/`). Los arneses no los borran; se pueden eliminar
   cuando ya no se necesiten. Los espacios de nombres de `unshare` y el
   tmpfs que se monta dentro desaparecen al terminar.

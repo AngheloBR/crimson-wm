@@ -29,7 +29,7 @@ pub const MAX_NAME: usize = 32;
 pub const MAX_MATCH_BYTES: usize = 256;
 
 const ROOT_KEYS: [&str; 4] = ["layout", "programs", "keybindings", "rules"];
-const LAYOUT_KEYS: [&str; 1] = ["master_percent"];
+const LAYOUT_KEYS: [&str; 2] = ["master_percent", "default"];
 const PROGRAM_KEYS: [&str; 1] = ["argv"];
 const BINDING_KEYS: [&str; 4] = ["keys", "action", "program", "desktop"];
 const RULE_KEYS: [&str; 8] = [
@@ -50,7 +50,9 @@ pub fn build(root: &Table, text: &str) -> Result<Config, Problem> {
     known(root, &ROOT_KEYS, "en la raíz")?;
     let mut config = Config::default();
     if let Some(item) = root.get("layout") {
-        config.master_percent = layout(item)?;
+        let (kind, percent) = layout(item)?;
+        config.default_layout = kind;
+        config.master_percent = percent;
     }
     let programs_item = root.get("programs");
     if let Some(item) = programs_item {
@@ -175,16 +177,27 @@ fn desktop(item: &Item, what: &str) -> Result<usize, Problem> {
 
 // [layout]
 
-fn layout(item: &Item) -> Result<u8, Problem> {
+fn layout(item: &Item) -> Result<(crate::layout::LayoutKind, u8), Problem> {
+    use crate::layout::LayoutKind;
     let t = table(item, "[layout]")?;
     known(t, &LAYOUT_KEYS, "en [layout]")?;
+    let kind = match t.get("default") {
+        None => LayoutKind::default(),
+        Some(item) => LayoutKind::parse(string(item, "default")?).ok_or_else(|| {
+            Problem::new(
+                Some(item.offset),
+                "default debe ser «master-stack» o «columns»",
+            )
+        })?,
+    };
     let Some(value) = t.get("master_percent") else {
-        return Ok(crate::layout::DEFAULT_MASTER_PERCENT);
+        return Ok((kind, crate::layout::DEFAULT_MASTER_PERCENT));
     };
     let n = integer(value, "master_percent")?;
     u8::try_from(n)
         .ok()
         .filter(|p| (MIN_MASTER_PERCENT..=MAX_MASTER_PERCENT).contains(p))
+        .map(|percent| (kind, percent))
         .ok_or_else(|| {
             Problem::new(
                 Some(value.offset),
@@ -329,6 +342,7 @@ fn keybinding(element: &Item, programs: &[Program]) -> Result<Binding, Problem> 
         "focus_next" => Action::FocusNext,
         "focus_prev" => Action::FocusPrev,
         "zoom" => Action::Zoom,
+        "cycle_layout" => Action::CycleLayout,
         "view_previous" => Action::ViewPrevious,
         "close" => Action::Close,
         "kill" => Action::Kill,
@@ -373,7 +387,7 @@ fn keybinding(element: &Item, programs: &[Program]) -> Result<Binding, Problem> 
             return Err(Problem::new(
                 Some(action_item.offset),
                 format!(
-                    "acción desconocida «{}» (exit, focus_next, focus_prev, zoom, launch, view_desktop, move_to_desktop, view_previous, close, kill o fullscreen)",
+                    "acción desconocida «{}» (exit, focus_next, focus_prev, zoom, cycle_layout, launch, view_desktop, move_to_desktop, view_previous, close, kill o fullscreen)",
                     shown(other)
                 ),
             ));

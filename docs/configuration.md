@@ -82,11 +82,40 @@ valid TOML but are never valid values here.
 
 | Key | Type | Range | Default |
 |---|---|---|---|
+| `default` | string | `"master-stack"` or `"columns"` | `"master-stack"` |
 | `master_percent` | integer | 10–90 | 50 |
 
 Width of the master column, in percent of the work area. With 1280 pixels
 and `master_percent = 60`, the master column is 768 pixels wide and the
 stack 512. A single tiled window always fills the work area.
+
+Since F13, each of the eight desktops starts with `default` and keeps its
+own layout in memory. Master-stack is unchanged from F12. Columns divides
+the work area's width into equal columns; leftover pixels go to the first
+windows (1280 pixels / 3 gives 427, 427, 426). Both layouts exclude floating
+and fullscreen windows. Fullscreen uses the physical screen; leaving it
+uses the desktop's current layout.
+
+`master_percent` remains global, is always validated, and is retained while
+using Columns. It takes effect again when switching back to Master-stack.
+Changing layouts does not change focus, window order, rules, floating
+geometry or desktop membership. Selections survive empty desktops and
+desktop switches, but are not saved across restarts. Very narrow areas may
+require overlapping one-pixel columns; extreme coordinates saturate as in
+F12. See [ADR 0015](adr/0015-motor-de-layouts.md).
+
+An optional binding (there is **no new default binding**) is:
+
+```toml
+[[keybindings]]
+keys = "Mod4+space"
+action = "cycle_layout"
+```
+
+This must be part of a complete binding table including an `exit` binding:
+explicit tables still replace all default bindings. The action cycles
+Master-stack → Columns → Master-stack only on the active desktop and
+ignores server autorepeat. Its `keys` name is `space`, not `Space`.
 
 ### `[programs.NAME]`
 
@@ -176,6 +205,7 @@ keys may be bound alone.
 | `exit` | — | Quit (exit code 0) |
 | `focus_next`, `focus_prev` | — | Focus the next / previous window |
 | `zoom` | — | Make the focused window the master (or swap it with the second) |
+| `cycle_layout` | — | Cycle the active desktop's layout without changing focus or window order |
 | `launch` | `program = "NAME"` | Start that program from `[programs]` |
 | `view_desktop` | `desktop = 1…8` | Show that desktop |
 | `move_to_desktop` | `desktop = 1…8` | Send the focused window there |

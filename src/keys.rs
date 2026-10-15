@@ -51,6 +51,8 @@ pub enum Action {
     FocusPrev,
     /// Convierte la ventana enfocada en la maestra.
     Zoom,
+    /// Alterna el layout del escritorio activo, sin cambiar orden ni foco.
+    CycleLayout,
     /// Lanza el programa de ese índice de la tabla de programas de la
     /// configuración.
     Launch(usize),

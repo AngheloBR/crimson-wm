@@ -10,7 +10,7 @@ the Rust toolchain that Debian ships.
 
 > [!WARNING]
 > **Pre-alpha. Not ready for daily use.** Crimson WM has no mouse support,
-> one layout and a small configuration file (key bindings, programs, master
+> two layouts and a small configuration file (key bindings, programs, layout, master
 > width and window rules). By
 > design it **refuses to start on display `:0`** and only runs on test
 > servers that pass its safeguards. Do not try to use it as your session's
@@ -24,14 +24,17 @@ binary. Only labels were added.*
 
 ## Status
 
-Phases F1–F12 are implemented. In the most recent recorded runs
-(2026-10-15, F12-C, Debian 13, debug build), all 204 unit tests passed and every
-acceptance battery from F1 to F12 passed. In each battery, one check
-is skipped on purpose because it would query the real display `:0`. One
-F3 run failed once while preparing its Xvfb server and passed when
-repeated; the cause has not been determined (see the technical
-documentation). Results of specific runs are not a guarantee for later
-changes; see the ADRs for details.
+Phases F1–F13 are implemented and locally audited through F13-C; F13 awaits
+integration and publication.
+In the most recent recorded runs (2026-10-15, Debian 13, debug build), all
+214 unit tests passed, F13 acceptance recorded 166 OK checks, and every
+regression battery from F1 to F12 passed. Each battery deliberately skips
+one check that would query the real display `:0`. One F10 run stopped
+during Xvfb preparation, before starting the WM, and passed when repeated;
+the cause has not been determined. Results, limitations and the earlier
+F12-C record are in the [F13 audit](docs/f13-audit.md),
+[ADR 0015](docs/adr/0015-motor-de-layouts.md) and the
+[F12 audit](docs/f12-audit.md). These runs do not guarantee later changes.
 
 | Phase | Feature | Details |
 |---|---|---|
@@ -47,6 +50,7 @@ changes; see the ADRs for details.
 | F10 | `_NET_WM_STRUT`, `_NET_WM_STRUT_PARTIAL` and `_NET_WORKAREA`: docks reserve screen edges, tiling uses the work area | [ADR 0012](docs/adr/0012-struts-y-area-de-trabajo.md) |
 | F11 | Window rules by `WM_CLASS`, window type and transiency (initial desktop, floating, no initial focus, fullscreen), from the experimental `CRIMSON_RULES` variable | [ADR 0013](docs/adr/0013-reglas-de-ventanas.md) |
 | F12 | TOML configuration (`crimson/wm.toml`): key bindings, programs, master width and window rules, fully validated at startup; `--config` and `--check-config` | [ADR 0014](docs/adr/0014-configuracion-toml.md) |
+| F13 | Pure layout engine: Master-stack and Columns, selection in memory per desktop, optional `cycle_layout` action; all 30 default bindings unchanged | [ADR 0015](docs/adr/0015-motor-de-layouts.md) |
 
 ### Key bindings
 
@@ -65,12 +69,13 @@ changes; see the ADRs for details.
 
 These are the defaults, used when there is no configuration file. A
 configuration file can replace the whole table (see below).
+`cycle_layout` can be bound explicitly; it has no default binding.
 
 ### Current limitations
 
 - No mouse support: no click to focus, no moving or resizing with the
   pointer.
-- One layout (master-stack; the master width is configurable); no
+- Two layouts (master-stack and columns; the master width is configurable); no
   borders, gaps or decorations.
 - The configuration is read once at startup: there is no live reload. The
   number of desktops (8) is fixed.
@@ -91,6 +96,7 @@ Without a file, the defaults above apply, exactly as in F11.
 
 ```toml
 [layout]
+default = "master-stack"     # or "columns"; omitted keeps the F12 layout
 master_percent = 60          # 10–90; default 50
 
 [programs.terminal]
@@ -125,6 +131,11 @@ desktop = 2
 - `CRIMSON_RULES` is **deprecated** but still read: if it is set, it
   replaces the rules of the file entirely, with a warning; if it is invalid,
   the window manager starts without rules, as in F11.
+- Since F13, every desktop starts with `[layout] default` and retains its
+  own selection in memory. `cycle_layout` toggles Master-stack → Columns →
+  Master-stack on the active desktop, preserving focus, client order and
+  fullscreen. Columns splits the work area into equal widths, with spare
+  pixels going to the first windows. Selection is not saved across restarts.
 
 See the [configuration reference](docs/configuration.md), the commented
 [example file](docs/examples/wm.toml) (identical to the defaults) and
@@ -174,7 +185,7 @@ programs (since F4), so no real application is ever launched.
 ```sh
 sudo apt install --no-install-recommends xvfb xauth x11-utils x11-apps \
     x11-xserver-utils xdotool imagemagick procps diffutils bsdextrautils shellcheck
-tests/acceptance/f12/run.sh
+tests/acceptance/f13/run.sh
 ```
 
 Before starting any X server, each harness asks Cargo for the window
@@ -191,7 +202,7 @@ observe the real session with `pgrep`; they never connect to `:0`.
 Some harnesses also produce comparison captures with a historical binary
 built from `git archive` (optional `CRIMSON_F8_BIN`, `CRIMSON_F9_BIN` and
 `CRIMSON_F10_BIN`); see the technical documentation. `CRIMSON_RULES` only
-reaches the window manager in the F11 harness and in one F12 case. No
+reaches the window manager in the F11 harness and explicit F12/F13 cases. No
 harness reads your own configuration: `HOME` and `XDG_CONFIG_HOME` always
 point to temporary directories.
 
@@ -235,6 +246,9 @@ the code (SVG sources in [docs/images](docs/images)).
   [captures](docs/images/crimson-wm-f11-comparison.png)
 - TOML configuration: [diagram](docs/images/crimson-wm-f12-config.png),
   [captures](docs/images/crimson-wm-f12-comparison.png)
+- Layout engine: [conceptual diagram](docs/images/crimson-wm-f13-layouts.png),
+  [real Xvfb comparison](docs/images/crimson-wm-f13-comparison.png),
+  [SVG source](docs/images/crimson-wm-f13-layouts.svg)
 
 ## Documentation
 
@@ -242,9 +256,10 @@ the code (SVG sources in [docs/images](docs/images)).
   phase in detail, requirements, harnesses and recorded results.
 - [Configuration reference](docs/configuration.md) and
   [example file](docs/examples/wm.toml).
-- [Architecture decision records (Spanish)](docs/adr/): ADR 0001–0014.
+- [Architecture decision records (Spanish)](docs/adr/): ADR 0001–0015.
 - [Dependency record](docs/dependencies.md).
 - [Independent F12-C audit](docs/f12-audit.md).
+- [F13-C audit and Xvfb investigation](docs/f13-audit.md).
 
 ## Roadmap
 

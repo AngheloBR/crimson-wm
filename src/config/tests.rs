@@ -39,6 +39,67 @@ fn rejects(text: &str, fragment: &str) {
 /// Atajo mínimo de salida, obligatorio en una tabla explícita.
 const EXIT: &str = "[[keybindings]]\nkeys = \"Mod4+Shift+Escape\"\naction = \"exit\"\n";
 
+// U27: extensión de F12 sin cambiar sus valores ni sus treinta atajos.
+#[test]
+fn u27_layout_predeterminado_y_formas_toml() {
+    assert_eq!(
+        ok(""),
+        ok("[layout]\ndefault = 'master-stack'\nmaster_percent = 50\n")
+    );
+    assert_eq!(
+        ok("[layout]\nmaster_percent = 60\n"),
+        ok("layout = { default = 'master-stack', master_percent = 60 }\n")
+    );
+    for text in [
+        "[layout]\ndefault = 'columns'\n",
+        "layout.default = 'columns'\n",
+        "layout = { default = 'columns' }\n",
+    ] {
+        let config = ok(text);
+        assert_eq!(config.default_layout, LayoutKind::Columns);
+        assert_eq!(config.master_percent, 50);
+        assert_eq!(config.bindings, Config::default().bindings);
+        assert_eq!(config.bindings.len(), 30);
+        assert!(config.summary().contains("layout columns"));
+    }
+}
+
+#[test]
+fn u27_layout_y_accion_invalidos() {
+    for text in [
+        "[layout]\ndefault = 'monocle'\n",
+        "[layout]\ndefault = 'Columns'\n",
+        "[layout]\ndefault = ''\n",
+        "[layout]\ndefault = 1\n",
+        "[layout]\ndefault = true\n",
+        "[layout]\ndefault = []\n",
+        "[layout]\ndefault = 'columns'\nmaster_percent = 9\n",
+        "[layout]\ndefault = 'columns'\nmaster_percent = 91\n",
+    ] {
+        assert!(from_text(text).is_err(), "{text}");
+    }
+    let config = ok(&format!(
+        "{EXIT}[[keybindings]]\nkeys='Mod4+space'\naction='cycle_layout'\n"
+    ));
+    assert_eq!(config.bindings[1].action, Action::CycleLayout);
+    for extra in ["desktop=1", "program='terminal'", "layout='columns'"] {
+        assert!(
+            from_text(&format!(
+                "{EXIT}[[keybindings]]\nkeys='Mod4+space'\naction='cycle_layout'\n{extra}\n"
+            ))
+            .is_err()
+        );
+    }
+    assert!(
+        !Config::default()
+            .bindings
+            .iter()
+            .any(|b| b.action == Action::CycleLayout)
+    );
+    let problem = err("[layout]\ndefault = 'grid'\n");
+    assert_eq!(problem.offset, Some(19));
+}
+
 // Valores predeterminados.
 
 #[test]

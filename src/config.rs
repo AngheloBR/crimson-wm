@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{Mode, OFlags};
 
 use crate::keys::{self, Binding};
-use crate::layout::DEFAULT_MASTER_PERCENT;
+use crate::layout::{DEFAULT_MASTER_PERCENT, LayoutKind};
 use crate::rules::{self, Rule};
 use crate::spawn::{self, Program};
 
@@ -39,6 +39,8 @@ pub const MAX_BYTES: u64 = 64 * 1024;
 /// Configuración completa y validada, con datos propios.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
+    /// `[layout] default`, aplicado al iniciar cada escritorio.
+    pub default_layout: LayoutKind,
     /// `[layout] master_percent`, de 10 a 90.
     pub master_percent: u8,
     /// `[programs]`: los programas de los atajos de lanzamiento.
@@ -54,6 +56,7 @@ impl Default for Config {
     /// mitad del ancho para la maestra y ninguna regla.
     fn default() -> Self {
         Self {
+            default_layout: LayoutKind::default(),
             master_percent: DEFAULT_MASTER_PERCENT,
             programs: spawn::default_programs(),
             bindings: keys::default_bindings(),
@@ -65,13 +68,18 @@ impl Default for Config {
 impl Config {
     /// Resumen para los registros, sin datos del archivo.
     pub fn summary(&self) -> String {
-        format!(
+        let mut summary = format!(
             "{} atajos, {} programas, maestra al {} %, {} reglas",
             self.bindings.len(),
             self.programs.len(),
             self.master_percent,
             self.rules.len()
-        )
+        );
+        // Conserva exactamente el informe histórico para Master-stack.
+        if self.default_layout != LayoutKind::MasterStack {
+            summary.push_str(&format!(", layout {}", self.default_layout.name()));
+        }
+        summary
     }
 }
 
